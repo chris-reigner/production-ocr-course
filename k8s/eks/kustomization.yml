@@ -1,0 +1,56 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- apps/deployment-api.yml
+- apps/deployment-vlm.yml
+- apps/redis-deployment.yml
+- apps/keda-scaler.yml
+- networking/service.yml
+
+# The account-specific ECR registry is injected at apply time so no AWS account
+# ID is committed. deploy.sh runs `kustomize edit set image` to rewrite newName
+# from `aws sts get-caller-identity`; the PLACEHOLDER below is what lives in git.
+images:
+- name: ocr-api-rust
+  newName: 215233065560.dkr.ecr.eu-central-1.amazonaws.com/ocr-api-rust
+  newTag: latest
+- name: ocr-vlm-qwen
+  newName: 215233065560.dkr.ecr.eu-central-1.amazonaws.com/ocr-vlm-qwen
+  newTag: latest
+- name: ocr-worker-rt
+  newName: 215233065560.dkr.ecr.eu-central-1.amazonaws.com/ocr-worker-rt
+  newTag: latest
+
+# Labels for resource grouping
+labels:
+- includeSelectors: true
+  pairs:
+    managed-by: gemini-cli-agent
+    system: eks-ocr-glmocr
+
+# Define Variables in a ConfigMap (Shared by Worker and vLLM)
+      # --- Global Config ---
+      # --- Worker Config ---
+      # --- vLLM Server Config ---
+configMapGenerator:
+- literals:
+  - REDIS_HOST=ocr-redis-service
+  - VLLM_URL=http://ocr-vlm-service:8000/v1/chat/completions
+  - MAX_BATCH_SIZE=4
+  - BATCH_WINDOW_MS=100
+  - GLMOCR_CONFIG_PATH=/app/config.yaml
+  - GLMOCR_PIPELINE_OCR_API_API_HOST=ocr-vlm-service
+  - GLMOCR_PIPELINE_OCR_API_API_PORT=8000
+  - SERVED_NAME=Qwen/Qwen3.5-4B
+  - PORT=8000
+  # Sized for the g6e GPU node (L40S, 48 GB). The 262144-token batch budget was
+  # tuned for an 80 GB A100 and OOMs here: vLLM reserves a 262144-token encoder
+  # cache plus activation buffers on top of the 0.9 GPU reservation, leaving no
+  # headroom (crashes allocating ~4.5 GiB during cudagraph capture). Matching the
+  # batch budget to MAX_MODEL_LEN and easing GPU_MEMORY fits the 48 GB card.
+  - GPU_MEMORY=0.85
+  - MAX_MODEL_LEN=16384
+  - MAX_NUM_BATCHED_TOKENS=16384
+  - MAX_NUM_SEQS=256
+  name: ocr-pipeline-config

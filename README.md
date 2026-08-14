@@ -1,6 +1,6 @@
 <div align="center">
   <h1>📄 Production-Grade SLM-Powered OCR Course 📄</h1>
-  <h3>Build a self-scaling, event-driven OCR pipeline on Kubernetes (AKS / GKE) with Qwen 3.5 + the GLM-OCR SDK</h3>
+  <h3>Build a self-scaling, event-driven OCR pipeline on Kubernetes (AKS / GKE / EKS) with Qwen 3.5 + the GLM-OCR SDK</h3>
 </div>
 
 </br>
@@ -31,7 +31,7 @@
 
 Most OCR tutorials stop at "call an API and get some text back." This isn't that.
 
-Instead, we're building a **production-grade, self-scaling Visual Document Understanding pipeline**, deployed for real on Kubernetes (AKS or GKE), that goes far beyond flat text extraction: it reasons about charts, tables, and layout the way a human reader would — powered by a Small Language Model (**Qwen 3.5**) instead of a bloated frontier model.
+Instead, we're building a **production-grade, self-scaling Visual Document Understanding pipeline**, deployed for real on Kubernetes (AKS, GKE, or EKS), that goes far beyond flat text extraction: it reasons about charts, tables, and layout the way a human reader would — powered by a Small Language Model (**Qwen 3.5**) instead of a bloated frontier model.
 
 By the end of this course, you'll have your own event-driven OCR system capable of:
 
@@ -40,7 +40,7 @@ By the end of this course, you'll have your own event-driven OCR system capable 
 * 🦀 Ingesting files through a high-concurrency **Rust (Axum) gateway**, decoupled from GPU inference via Redis
 * 🔄 Running a **zero-copy, `/dev/shm`-based** document handoff between the layout encoder and the inference engine
 * ☸️ Auto-scaling T4 (layout) and A100 (inference) node pools independently with **KEDA**, from zero to bursting load
-* 🔒 Locking the whole pipeline behind an **Internal Load Balancer + Enterprise API Gateway** (Azure APIM / GCP API Gateway), with zero public exposure
+* 🔒 Locking the whole pipeline behind an **Internal Load Balancer + Enterprise API Gateway** (Azure APIM / GCP API Gateway / AWS API Gateway), with zero public exposure
 * 🤖 Wrapping the pipeline as an **MCP server** for native use by AI agents, including Claude Code
 
 Excited? Let's get started!
@@ -85,12 +85,12 @@ We run this as a 6-week hands-on engineering cohort. The entire repository is op
 
 | Week | Focus | Hands-on |
 | :--- | :--- | :--- |
-| ⛵ **1. Kubernetes for AI Systems** | Pods, Services, Node Pools, resource scheduling | Cluster setup on AKS/GKE, T4 & A100 node pools, GPU drivers/operators with proper security profiles and taints |
+| ⛵ **1. Kubernetes for AI Systems** | Pods, Services, Node Pools, resource scheduling | Cluster setup on AKS/GKE/EKS, T4 & A100/L40S node pools, GPU drivers/operators with proper security profiles and taints |
 | 🧠 **2. SOTA OCR Approaches & VDU** | Single-stage end-to-end models vs. our two-stage layout-first pipeline | Evaluating GLM-OCR SDK's layout detection and measuring performance trade-offs |
 | ⚡ **3. Deploying the vLLM Inference Engine** | Continuous batching, PagedAttention, scheduling optimizations | Deploying Qwen 3.5 4B on vLLM, tuning `MAX_NUM_BATCHED_TOKENS`, chunked prefills, Multi-Token Prediction (MTP) |
 | 🦀 **4. Rust Ingest Gateway** | High-concurrency gateways for heavy payloads; ownership, borrowing, async Rust | Building the Axum gateway (`client_rt_producer`), 10MB limits, atomic `HSET` writes to Redis |
 | 🔄 **5. Async Architectures & Zero-Copy Ingestion** | Queue buffers, dynamic batching collectors, RAM-disk transfer | Building the Python worker (`client_rt_consumer`), 100ms collection window, `/dev/shm` handoff, scale-to-zero with KEDA |
-| 🛡️ **6. Enterprise Gateways & Claude Code MCP** | Security boundaries, JWT verification, rate limiting, agentic workflows | Configuring Azure APIM / GCP API Gateway policies and wrapping the pipeline in an MCP server for Claude Code |
+| 🛡️ **6. Enterprise Gateways & Claude Code MCP** | Security boundaries, JWT verification, rate limiting, agentic workflows | Configuring Azure APIM / GCP API Gateway / AWS API Gateway policies and wrapping the pipeline in an MCP server for Claude Code |
 
 <p align="center">
   <img src="images/week1_infra_overview.png" width="32%" alt="Week 1">
@@ -110,12 +110,15 @@ Start with account setup, then GPU quota, then the full deployment guide for you
 1. **Create your cloud account & claim free credits**
    * 🔵 [Azure Account Setup](docs/azure_onboarding.md) — the course's primary cloud
    * 🟢 [GCP Account Setup](docs/gcp_onboarding.md) — optional, if you'd rather run on Google Cloud
-2. **Request GPU quota** (T4 + A100 — this is the step most people get stuck on; free/trial accounts cannot run GPUs)
+   * 🟠 [AWS Account Setup](docs/aws_onboarding.md) — optional, if you'd rather run on Amazon Web Services
+2. **Request GPU quota** (T4 + A100/L40S — this is the step most people get stuck on; free/trial accounts cannot run GPUs)
    * 🔵 [Azure GPU Access & Quota Prerequisites](docs/azure_gpu_prereqs.md)
    * 🟢 [GCP GPU Access & Quota Prerequisites](docs/gcp_gpu_prereqs.md)
+   * 🟠 [AWS GPU Access & Quota Prerequisites](docs/aws_gpu_prereqs.md)
 3. **Deploy the pipeline**
    * 📘 [Azure Kubernetes Service (AKS) Deployment Guide](docs/aks_deployment.md)
    * 📗 [Google Kubernetes Engine (GKE) Deployment Guide](docs/gke_deployment.md)
+   * 📙 [Amazon Elastic Kubernetes Service (EKS) Deployment Guide](docs/eks_deployment.md)
    * ☁️ [Cloud Provider Comparison & Discrepancies Matrix](docs/cloud_comparison.md)
 
 ---
@@ -321,9 +324,9 @@ For the real-time API, we use an aggressive, low-latency scaling strategy that e
 | **GLM-OCR SDK + PP-DocLayoutV3** | Deterministic layout detection layer that pre-encodes semantic regions before generative inference. |
 | **Rust (Axum)** | The high-concurrency ingest gateway (`client_rt_producer`) that receives files and queues tasks. |
 | **Redis** | Decoupled state store between the API and the GPU-heavy inference pipeline. |
-| **Kubernetes (AKS / GKE)** | The orchestration layer for CPU, T4, and A100 node pools. |
+| **Kubernetes (AKS / GKE / EKS)** | The orchestration layer for CPU, T4, and A100/L40S node pools. |
 | **KEDA** | Event-driven autoscaling — scale-on-queue-depth for the layout pool, scale-on-waiting-request for the inference pool. |
-| **Azure APIM / GCP API Gateway** | Enterprise API gateway enforcing JWT auth, rate limiting, and zero public exposure. |
+| **Azure APIM / GCP API Gateway / AWS API Gateway** | Enterprise API gateway enforcing JWT auth, rate limiting, and zero public exposure. |
 
 ## Contributors
 

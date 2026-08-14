@@ -1,0 +1,26 @@
+# k8s/eks/infra/nvidia-device-plugin-values.yaml
+# Helm values for the NVIDIA k8s-device-plugin on EKS.
+# The EKS GPU-optimized AMI (AL2023_x86_64_NVIDIA) already ships the NVIDIA
+# kernel drivers and container toolkit, so — unlike AKS — we do NOT need the
+# full GPU Operator to compile drivers. We only need the device plugin to
+# advertise the `nvidia.com/gpu` resource to the scheduler.
+#
+# Goal: ensure the device-plugin DaemonSet tolerates the GPU node-group taint
+# (nvidia.com/gpu=present:NoSchedule) so it can land on the g6e / g4dn nodes.
+tolerations:
+  - key: "nvidia.com/gpu"
+    operator: "Equal"
+    value: "present"
+    effect: "NoSchedule"
+
+# Only schedule the plugin onto the GPU node groups.
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: eks.amazonaws.com/nodegroup
+              operator: In
+              values:
+                - gpunpa100
+                - gpunpt4

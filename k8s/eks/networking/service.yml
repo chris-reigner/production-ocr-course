@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ocr-api-service
+  namespace: default
+  annotations:
+    # Provision an internal (private-IP) Network Load Balancer via the
+    # AWS Load Balancer Controller. The NLB stays inside the VPC private
+    # subnets and is only reachable from API Gateway through a VPC Link.
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
+spec:
+  selector:
+    app: ocr-api
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 5000
+  type: LoadBalancer
