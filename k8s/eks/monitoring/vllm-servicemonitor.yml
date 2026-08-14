@@ -1,0 +1,26 @@
+# Tells the kube-prometheus-stack Prometheus to scrape the vLLM pod's /metrics
+# endpoint, which exposes vllm:num_requests_waiting (the metric the ocr-vlm KEDA
+# ScaledObject scales on). Without this, that series never exists and the
+# prometheus trigger — and the promtool query in the docs — return empty.
+#
+# The `release: prometheus` label is required: the Prometheus instance selects
+# ServiceMonitors, and the existing chart-managed monitors all carry it.
+# Lives in `monitoring` but targets the `default` namespace via namespaceSelector.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ocr-vlm
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - default
+  selector:
+    matchLabels:
+      app: ocr-vlm
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

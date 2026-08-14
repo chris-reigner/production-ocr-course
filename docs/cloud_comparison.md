@@ -1,6 +1,6 @@
-# ☁️ Cloud Provider Architecture Comparison: AKS vs. GKE
+# ☁️ Cloud Provider Architecture Comparison: AKS vs. GKE vs. EKS
 
-This document provides an architecture and operational comparison between the **Azure Kubernetes Service (AKS)** and **Google Kubernetes Engine (GKE)** implementations for this SLM-Powered OCR repository.
+This document provides an architecture and operational comparison between the **Azure Kubernetes Service (AKS)**, **Google Kubernetes Engine (GKE)**, and **Amazon Elastic Kubernetes Service (EKS)** implementations for this SLM-Powered OCR repository.
 
 ---
 
@@ -21,18 +21,18 @@ Both cloud deployments share an identical core application stack and metric-driv
 
 The following table summarizes the provider-specific infrastructure configurations and manifest differences:
 
-| Architectural Component | Azure Kubernetes Service (AKS) | Google Kubernetes Engine (GKE) | Technical Rationale & Impact |
-| :--- | :--- | :--- | :--- |
-| **CLI & Auth** | `az cli` / `az login` | `gcloud sdk` / `gcloud auth login` | Cloud-native CLI commands for cluster management and credential fetching. |
-| **Container Registry** | **Azure Container Registry (ACR)**<br>`acrocrinference.azurecr.io` | **Google Artifact Registry (AR)**<br>`us-central1-docker.pkg.dev/...` | Regional image repository host per cloud ecosystem. |
-| **GPU Driver Lifecycle** | Helm-installed **NVIDIA GPU Operator** (`k8s/aks/infra/gpu-operator-values.yaml`) | **Natively Managed GPU Drivers** (`gpu-driver-version=default` node pool flag) | GKE compiles drivers and manages device plugin daemonsets natively, removing manual Helm operator overhead. |
-| **A100 GPU Machine Type** | `Standard_NC24ads_A100_v4` (24 vCPU, 220GB RAM, 1x A100 80GB) | `a2-ultragpu-1g` (12 vCPU, 170GB RAM, 1x A100 80GB) | Specialized compute instances tailored for 80GB VRAM requirements. |
-| **T4 GPU Machine Type** | `Standard_NC16as_T4_v3` (16 vCPU, 64GB RAM, 1x T4 16GB) | `n1-standard-4` + `--accelerator type=nvidia-tesla-t4,count=1` | Modular accelerator attachment on GKE vs fixed GPU SKU on AKS. |
-| **GPU Node Selection** | `kubernetes.azure.com/agentpool` | `cloud.google.com/gke-nodepool` | Cloud controller manager node labeling conventions. |
-| **GPU Node Taints & Tolerations** | Custom taints: `sku=gpunpa100:NoSchedule` / `sku=gpunpt4:NoSchedule` | Standard GKE GPU taint: `nvidia.com/gpu=present:NoSchedule` | GKE automatically taints GPU nodes and handles scheduling when pods specify `nvidia.com/gpu` limits. |
-| **Shared Storage Class (RWX)** | **Azure Blob CSI Driver**<br>`storageClassName: azureblob-fuse-premium` | **Google Cloud Filestore CSI Driver**<br>`storageClassName: standard-rwx` | Azure Blob Fuse CSI allows 300Gi allocations; GKE Filestore basic-hdd requires a minimum 1Ti allocation. |
-| **Internal Load Balancer** | `service.beta.kubernetes.io/azure-load-balancer-internal: "true"` | `networking.gke.io/load-balancer-type: "Internal"` | Provider-specific cloud controller manager annotations for private IP provisioning. |
-| **Enterprise Exposure & Gateway** | **Azure API Management (APIM)** in Internal VNet Mode with XML policies (`apim-policy.xml`) | **Google Cloud API Gateway** / **Cloud Armor** + Private Service Connect | Cloud-native API gateway, token validation (JWT), and rate-limiting at the network boundary. |
+| Architectural Component | Azure Kubernetes Service (AKS) | Google Kubernetes Engine (GKE) | Amazon Elastic Kubernetes Service (EKS) | Technical Rationale & Impact |
+| :--- | :--- | :--- | :--- | :--- |
+| **CLI & Auth** | `az cli` / `az login` | `gcloud sdk` / `gcloud auth login` | `aws cli` / `aws configure` | Cloud-native CLI commands for cluster management and credential fetching. |
+| **Container Registry** | **Azure Container Registry (ACR)**<br>`acrocrinference.azurecr.io` | **Google Artifact Registry (AR)**<br>`us-central1-docker.pkg.dev/...` | **Elastic Container Registry (ECR)**<br>`<acct>.dkr.ecr.eu-central-1.amazonaws.com/...` | Regional image repository host per cloud ecosystem. |
+| **GPU Driver Lifecycle** | Helm-installed **NVIDIA GPU Operator** (`k8s/aks/infra/gpu-operator-values.yaml`) | **Natively Managed GPU Drivers** (`gpu-driver-version=default` node pool flag) | **GPU-optimized AMI** (`AL2023_x86_64_NVIDIA`) ships drivers + Helm **NVIDIA device plugin** (`k8s/eks/infra/nvidia-device-plugin-values.yaml`) | The EKS GPU AMI pre-bundles drivers, so only the device plugin is needed — no driver compilation as on AKS. |
+| **A100-class GPU Machine Type** | `Standard_NC24ads_A100_v4` (24 vCPU, 220GB RAM, 1x A100 80GB) | `a2-ultragpu-1g` (12 vCPU, 170GB RAM, 1x A100 80GB) | `g6e.4xlarge` (16 vCPU, 128GB RAM, 1x **L40S 48GB**) | AWS has no single-A100 node (A100 only ships as 8-GPU `p4d`/`p4de`); L40S preserves the 1-GPU-per-pod model. |
+| **T4 GPU Machine Type** | `Standard_NC16as_T4_v3` (16 vCPU, 64GB RAM, 1x T4 16GB) | `n1-standard-4` + `--accelerator type=nvidia-tesla-t4,count=1` | `g4dn.4xlarge` (16 vCPU, 64GB RAM, 1x T4 16GB) | Fixed GPU SKU on AKS/EKS vs modular accelerator attachment on GKE. |
+| **GPU Node Selection** | `kubernetes.azure.com/agentpool` | `cloud.google.com/gke-nodepool` | `eks.amazonaws.com/nodegroup` | Cloud controller manager node labeling conventions. |
+| **GPU Node Taints & Tolerations** | Custom taints: `sku=gpunpa100:NoSchedule` / `sku=gpunpt4:NoSchedule` | Standard GKE GPU taint: `nvidia.com/gpu=present:NoSchedule` | Manual taint at node-group creation: `nvidia.com/gpu=present:NoSchedule` | EKS does not auto-taint GPU nodes, so the taint is set explicitly on `create-nodegroup` (GKE-style scheme reused). |
+| **Shared Storage Class (RWX)** | **Azure Blob CSI Driver**<br>`storageClassName: azureblob-fuse-premium` | **Google Cloud Filestore CSI Driver**<br>`storageClassName: standard-rwx` | **Amazon EFS CSI Driver**<br>`storageClassName: efs-sc` | EBS is RWO-only, so the shared model-weights volume must use EFS for `ReadWriteMany`. |
+| **Internal Load Balancer** | `service.beta.kubernetes.io/azure-load-balancer-internal: "true"` | `networking.gke.io/load-balancer-type: "Internal"` | `service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"` (+ `-type: external`, `-nlb-target-type: ip`) | Provider-specific cloud controller manager annotations for private IP provisioning. |
+| **Enterprise Exposure & Gateway** | **Azure API Management (APIM)** in Internal VNet Mode with XML policies (`apim-policy.xml`) | **Google Cloud API Gateway** / **Cloud Armor** + Private Service Connect | **Amazon API Gateway** + VPC Link (PrivateLink) + usage plans/API keys + **AWS WAF** | Cloud-native API gateway, token validation (JWT), and rate-limiting at the network boundary. |
 
 ---
 
@@ -99,24 +99,41 @@ k8s/
 │   │   └── service.yml          # Azure Internal Load Balancer service
 │   └── kustomization.yml        # AKS Kustomize entrypoint
 │
-└── gke/                         # GCP-Specific Manifest Overlays
+├── gke/                         # GCP-Specific Manifest Overlays
+│   ├── apps/
+│   │   ├── deployment-api.yml   # Artifact Registry tags & gke-nodepool selectors
+│   │   ├── deployment-vlm.yml   # Artifact Registry tags & gke-nodepool selectors
+│   │   ├── keda-scaler.yml      # KEDA autoscaling rules
+│   │   └── redis-deployment.yml # Redis state store deployment
+│   ├── infra/
+│   │   └── provisioning/
+│   │       ├── ingest-job.yaml  # Model downloader job
+│   │       └── pvc.yaml         # standard-rwx Filestore PVC (1Ti)
+│   ├── networking/
+│   │   └── service.yml          # GKE Internal Load Balancer service
+│   └── kustomization.yml        # GKE Kustomize entrypoint
+│
+└── eks/                         # AWS-Specific Manifest Overlays
     ├── apps/
-    │   ├── deployment-api.yml   # Artifact Registry tags & gke-nodepool selectors
-    │   ├── deployment-vlm.yml   # Artifact Registry tags & gke-nodepool selectors
+    │   ├── deployment-api.yml   # ECR tags & eks-nodegroup selectors
+    │   ├── deployment-vlm.yml   # ECR tags & L40S eks-nodegroup selectors
     │   ├── keda-scaler.yml      # KEDA autoscaling rules
     │   └── redis-deployment.yml # Redis state store deployment
     ├── infra/
+    │   ├── efs-storageclass.yaml        # EFS CSI RWX StorageClass (efs-sc)
+    │   ├── nvidia-device-plugin-values.yaml # NVIDIA device-plugin tolerations for EKS
     │   └── provisioning/
     │       ├── ingest-job.yaml  # Model downloader job
-    │       └── pvc.yaml         # standard-rwx Filestore PVC (1Ti)
+    │       └── pvc.yaml         # efs-sc EFS PVC (300Gi)
     ├── networking/
-    │   └── service.yml          # GKE Internal Load Balancer service
-    └── kustomization.yml        # GKE Kustomize entrypoint
+    │   └── service.yml          # AWS internal NLB service
+    └── kustomization.yml        # EKS Kustomize entrypoint
 ```
 
 ---
 
 ## 📚 Deployment Guides Reference
 
-* 📘 [Azure Kubernetes Service (AKS) Deployment Lifecycle](file:///Users/hedrergudene/Documents/GitHub/aks-ocr-rt-dpl/docs/aks_deployment.md)
-* 📗 [Google Kubernetes Engine (GKE) Deployment Lifecycle](file:///Users/hedrergudene/Documents/GitHub/aks-ocr-rt-dpl/docs/gke_deployment.md)
+* 📘 [Azure Kubernetes Service (AKS) Deployment Lifecycle](aks_deployment.md)
+* 📗 [Google Kubernetes Engine (GKE) Deployment Lifecycle](gke_deployment.md)
+* 📙 [Amazon Elastic Kubernetes Service (EKS) Deployment Lifecycle](eks_deployment.md)

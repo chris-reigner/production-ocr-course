@@ -1,0 +1,21 @@
+# k8s/eks/infra/efs-storageclass.yaml
+# RWX StorageClass backed by the Amazon EFS CSI driver.
+# EBS only supports ReadWriteOnce, so the shared model-weights volume
+# (mounted by the ingest Job, the vLLM server, and the layout worker
+# simultaneously) must be backed by EFS.
+#
+# Replace <EFS_FILE_SYSTEM_ID> with the filesystem created in the
+# deployment guide (e.g. fs-0abc123def4567890). Dynamic provisioning
+# creates one EFS access point per PVC under the shared filesystem.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: efs-sc
+provisioner: efs.csi.aws.com
+parameters:
+  provisioningMode: efs-ap
+  fileSystemId: <EFS_FILE_SYSTEM_ID>
+  directoryPerms: "700"
+  gidRangeStart: "1000"
+  gidRangeEnd: "2000"
+  basePath: "/model-weights"

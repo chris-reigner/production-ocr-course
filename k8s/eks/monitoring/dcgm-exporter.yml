@@ -1,0 +1,95 @@
+# NVIDIA DCGM exporter — the source of GPU telemetry (DCGM_FI_DEV_GPU_UTIL etc.).
+# The NVIDIA device plugin alone exports NO metrics; without this DaemonSet the
+# GPU-utilization promtool query and any Grafana GPU panels return empty.
+#
+# Scheduling: GPU nodes carry the taint nvidia.com/gpu=present:NoSchedule and sit
+# in the gpunpa100 (L40S) / gpunpt4 (T4) node groups, so we tolerate the taint and
+# pin to those groups by label. The pod does NOT request an nvidia.com/gpu resource
+# (that would consume a schedulable GPU); instead NVIDIA_VISIBLE_DEVICES=all makes
+# the node's NVIDIA container runtime expose every GPU read-only for monitoring.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dcgm-exporter
+  namespace: monitoring
+  labels:
+    app: dcgm-exporter
+spec:
+  selector:
+    matchLabels:
+      app: dcgm-exporter
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: dcgm-exporter
+    spec:
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Equal
+          value: present
+          effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: eks.amazonaws.com/nodegroup
+                    operator: In
+                    values:
+                      - gpunpa100
+                      - gpunpt4
+      containers:
+        - name: dcgm-exporter
+          image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: all
+          ports:
+            - name: metrics
+              containerPort: 9400
+          securityContext:
+            # DCGM needs SYS_ADMIN to read some device-level profiling counters.
+            capabilities:
+              add: ["SYS_ADMIN"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dcgm-exporter
+  namespace: monitoring
+  labels:
+    app: dcgm-exporter
+spec:
+  selector:
+    app: dcgm-exporter
+  ports:
+    - name: metrics
+      port: 9400
+      targetPort: 9400
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: dcgm-exporter
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: dcgm-exporter
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
