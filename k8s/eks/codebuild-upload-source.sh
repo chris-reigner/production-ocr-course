@@ -3,9 +3,9 @@
 # that CodeBuild pulls from (SOURCE_TYPE=S3). Run this before each build so the
 # cloud build sees your latest code.
 #
-# We zip the WORKING TREE (not `git archive HEAD`) on purpose: buildspec.yml and
-# these scripts may still be uncommitted, and the build needs buildspec.yml at
-# the archive root plus the three build contexts.
+# We zip the WORKING TREE (not `git archive HEAD`) on purpose: codebuild/buildspec.yml
+# and these scripts may still be uncommitted, and the build needs
+# codebuild/buildspec.yml in the archive plus the three build contexts.
 #
 #   ./k8s/eks/codebuild-upload-source.sh
 #   S3_BUCKET=my-bucket S3_KEY=ocr-source.zip ./k8s/eks/codebuild-upload-source.sh

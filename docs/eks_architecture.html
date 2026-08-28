@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SLM-Powered OCR on EKS — Architecture</title>
+<style>
+  :root {
+    --bg: #f6f8fc;
+    --canvas: #ffffff;
+    --ink: #1f2a44;
+    --muted: #5b6478;
+    --line: #e4e7f0;
+    --indigo: #6c5ce7;
+    --indigo-d: #4b3fca;
+    --blue: #2563eb;
+    --eks: #ec7211;      /* AWS orange */
+    --green-bg: #eef9f0;
+    --green-bd: #bfe6c6;
+    --green-tx: #1f7a3d;
+    --red: #c0392b;
+    --pill: #eef1fb;
+    --dash: #9aa3b2;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .canvas {
+    max-width: 1480px; margin: 24px auto; background: var(--canvas);
+    border: 1px solid var(--line); border-radius: 20px; padding: 28px 34px 34px;
+    box-shadow: 0 10px 40px rgba(31,42,68,.06);
+  }
+
+  /* Header */
+  header { text-align: center; position: relative; margin-bottom: 18px; }
+  header h1 { margin: 0; font-size: 40px; letter-spacing: -.5px; color: #16223f; }
+  header h1 .eks { color: var(--eks); }
+  header .sub { margin-top: 6px; color: var(--muted); font-size: 15px; }
+  header .sub b { color: var(--indigo); font-weight: 600; }
+  .brand {
+    position: absolute; right: 4px; top: 2px; text-align: right;
+    font-size: 12px; color: var(--muted); line-height: 1.2;
+  }
+  .brand b { display:block; color: var(--ink); font-size: 14px; }
+
+  /* Panels */
+  .panel { border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px; }
+  .panel-title {
+    text-align: center; font-weight: 700; letter-spacing: .12em; font-size: 13px;
+    color: var(--indigo-d); text-transform: uppercase; margin: 2px 0 14px;
+  }
+  .platform { background: linear-gradient(180deg,#fbfcff,#f4f6fe); }
+  .cards5 { display: grid; grid-template-columns: repeat(5,1fr); gap: 12px; }
+  .svc {
+    display: flex; gap: 10px; align-items: center;
+    background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 11px 12px;
+  }
+  .svc .ic { width: 38px; height: 38px; border-radius: 10px; display:grid; place-items:center; flex: 0 0 38px; font-size:18px; }
+  .svc h4 { margin: 0; font-size: 14px; }
+  .svc p { margin: 2px 0 0; font-size: 11px; color: var(--muted); }
+  .platform-tag { text-align:center; margin-top:13px; color: var(--muted); font-size:11.5px; line-height:1.5; }
+  .platform-tag b { color: var(--indigo-d); }
+  .platform-tag .tf { color: var(--eks); font-weight:700; }
+
+  /* Build pipeline (CI) */
+  .build { margin-top: 16px; border:1px solid #f6d9bf; background: linear-gradient(180deg,#fffaf4,#fff3e8); border-radius:16px; padding:14px 18px; }
+  .build .bt { text-align:center; font-weight:700; letter-spacing:.12em; font-size:12.5px; color: var(--eks); text-transform:uppercase; margin-bottom:12px; }
+  .build .flow { display:flex; align-items:center; justify-content:center; gap:10px; flex-wrap:wrap; }
+  .build .node { background:#fff; border:1px solid #f2cfae; border-radius:10px; padding:8px 13px; font-size:12.5px; color:#7a4a17; text-align:center; }
+  .build .node b { color:#16223f; display:block; font-size:13px; }
+  .build .node small { color: var(--muted); font-size:10.5px; }
+  .build .sep { color: var(--eks); font-size:18px; font-weight:700; }
+  .build .imgs { text-align:center; margin-top:10px; font-size:11.5px; color:var(--muted); }
+  .build .imgs code { background:#fff; border:1px solid #f2cfae; padding:1px 6px; border-radius:5px; color:#7a4a17; }
+
+  /* Autoscaling pill row */
+  .signals { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 22px 0 6px; }
+  .signal {
+    justify-self: center; background: var(--pill); border: 1px dashed #c7ccdf; color: var(--indigo-d);
+    font-size: 12.5px; font-weight: 600; padding: 6px 12px; border-radius: 999px; position: relative;
+  }
+  .signal.green { background: var(--green-bg); border-color: var(--green-bd); color: var(--green-tx); }
+  .signal::after {
+    content:""; position:absolute; left:50%; top:100%; width:0; height:16px;
+    border-left: 2px dashed var(--dash);
+  }
+
+  /* Pipeline */
+  .pipe { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr 1fr auto; gap: 0; align-items: stretch; }
+  .stage-wrap { display:flex; align-items: stretch; }
+  .stage {
+    flex: 1; background:#fff; border: 1px solid var(--line); border-radius: 14px; padding: 14px;
+    display:flex; flex-direction: column; min-height: 210px;
+  }
+  .stage .top { display:flex; align-items:center; gap:8px; }
+  .stage .glyph { font-size: 26px; }
+  .stage h3 { margin: 8px 0 2px; font-size: 17px; }
+  .stage .role { color: var(--muted); font-size: 12.5px; min-height: 30px; }
+  .stage ul { margin: 6px 0 0; padding-left: 16px; }
+  .stage li { font-size: 12px; color: #33405c; margin: 2px 0; }
+  .tag {
+    margin-top: auto; align-self: flex-start; font-size: 11.5px; font-weight: 700;
+    padding: 4px 9px; border-radius: 8px;
+  }
+  .tag.cpu { background:#eaf0ff; color: var(--blue); }
+  .tag.gpu { background: var(--green-bg); color: var(--green-tx); }
+  .tag.edge{ background:#fff3e8; color: var(--eks); }
+  .arrow { display:grid; place-items:center; width: 42px; position: relative; }
+  .arrow .n {
+    width: 22px; height: 22px; border-radius:999px; background:#1f2a44; color:#fff;
+    font-size: 12px; font-weight:700; display:grid; place-items:center;
+  }
+  .arrow .glyph { position:absolute; font-size: 20px; color:#1f2a44; }
+  .arrow .glyph.fwd { top: 26%; }
+  .arrow .glyph.back { bottom: 20%; color: var(--indigo); }
+  .arrow .lbl { position:absolute; bottom: 4px; font-size: 10px; color: var(--indigo); text-align:center; width: 120px; left:-40px; }
+
+  /* Stats panel */
+  .stats { border: 1px solid var(--green-bd); background: var(--green-bg); border-radius: 14px; padding: 10px 14px; width: 210px; margin-left: 14px; }
+  .stats .row { display:flex; align-items:center; gap:10px; padding: 9px 2px; border-bottom: 1px dashed var(--green-bd); font-size: 13px; }
+  .stats .row:last-child { border-bottom: 0; }
+  .stats .row b { color: var(--green-tx); }
+  .stats .ic { font-size: 16px; }
+
+  /* Lower band */
+  .lower { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 16px; margin-top: 20px; }
+  .store { border:1px solid #e0dcf7; background: linear-gradient(180deg,#faf9ff,#f4f2fe); border-radius:16px; padding:16px 18px; }
+  .store .head { display:flex; align-items:center; gap:12px; }
+  .store .redis { width:44px;height:44px;border-radius:10px;background:#fdecea;display:grid;place-items:center;font-size:22px;}
+  .store h3 { margin:0; font-size:18px; }
+  .store small { color: var(--muted); }
+  .store ul { columns: 2; margin: 12px 0 0; padding-left: 16px; }
+  .store li { font-size: 12.5px; margin: 3px 0; color:#33405c; }
+  .mini { border:1px solid var(--green-bd); background: var(--green-bg); border-radius:14px; padding:14px 16px; }
+  .mini h4 { margin:0 0 8px; font-size:13px; letter-spacing:.08em; text-transform:uppercase; color: var(--green-tx); }
+  .mini div { font-size:13px; margin:6px 0; color:#2c4a37; }
+
+  /* Legend + values */
+  .foot { display:grid; grid-template-columns: 1.1fr 2fr; gap:16px; margin-top:20px; }
+  .legend { border:1px solid var(--line); border-radius:14px; padding:14px 16px; }
+  .legend div { display:flex; align-items:center; gap:10px; font-size:13px; margin:8px 0; }
+  .ln { width:46px; height:0; }
+  .ln.solid { border-top:3px solid #1f2a44; }
+  .ln.dash-p { border-top:3px dashed var(--indigo); }
+  .ln.dash-g { border-top:3px dashed var(--dash); }
+  .values { display:grid; grid-template-columns: repeat(4,1fr); gap:12px; }
+  .value { border:1px solid var(--line); border-radius:14px; padding:12px 14px; }
+  .value .h { display:flex; align-items:center; gap:8px; font-weight:700; font-size:13px; }
+  .value p { margin:6px 0 0; font-size:11.5px; color:var(--muted); }
+  .note { text-align:center; margin-top:16px; font-size:11.5px; color:var(--muted); }
+  .note code { background:#f0f2f9; padding:1px 5px; border-radius:5px; }
+</style>
+</head>
+<body>
+<div class="canvas">
+
+  <header>
+    <div class="brand">SLM OCR Course</div>
+    <h1>SLM-Powered OCR on <span class="eks">EKS</span></h1>
+    <div class="sub">Qwen3.5-4B for visual understanding &nbsp;·&nbsp; GLM-OCR SDK in Worker &nbsp;·&nbsp; <b>vLLM</b> &nbsp;·&nbsp; Event-Driven</div>
+  </header>
+
+  <!-- PLATFORM SERVICES -->
+  <div class="panel platform">
+    <div class="panel-title">Amazon Elastic Kubernetes Service (EKS) · v1.31 control plane</div>
+    <div class="cards5">
+      <div class="svc"><div class="ic" style="background:#e8f7f0">⚙️</div><div><h4>KEDA</h4><p>Event autoscaling · scale-to-zero</p></div></div>
+      <div class="svc"><div class="ic" style="background:#fdeee6">🔥</div><div><h4>Prometheus + Grafana</h4><p>DCGM GPU telemetry · ServiceMonitors</p></div></div>
+      <div class="svc"><div class="ic" style="background:#eaf0ff">🗄️</div><div><h4>EFS CSI Driver</h4><p>RWX model-weights PVC · IRSA</p></div></div>
+      <div class="svc"><div class="ic" style="background:#eafaef">🟩</div><div><h4>NVIDIA Device Plugin</h4><p>GPU sched · AL2023 NVIDIA AMI</p></div></div>
+      <div class="svc"><div class="ic" style="background:#eef1fb">🔀</div><div><h4>AWS LB Controller</h4><p>Internal NLB · IRSA</p></div></div>
+    </div>
+    <div class="platform-tag">
+      Add-ons run on the untainted <b>systemnp</b> pool (m6i.large) · pod identity via <b>IAM OIDC / IRSA</b><br>
+      <span class="tf">Terraform terraform/eks</span> owns VPC · IAM · EKS · 5 node groups · EFS + CSI addon · ECR &nbsp;—&nbsp; KEDA / Prometheus / NVIDIA plugin / LB Controller installed via Helm post-apply
+    </div>
+  </div>
+
+  <!-- BUILD & REGISTRY (CI) -->
+  <div class="build">
+    <div class="bt">Build &amp; Registry — CI (build-time, off-cluster)</div>
+    <div class="flow">
+      <div class="node"><b>Source</b><small>GitHub / S3 zip</small></div>
+      <span class="sep">→</span>
+      <div class="node"><b>AWS CodeBuild</b><small>native amd64 · buildspec.yml · privileged DinD</small></div>
+      <span class="sep">→</span>
+      <div class="node"><b>Amazon ECR</b><small>3 repos · scan-on-push</small></div>
+      <span class="sep">→</span>
+      <div class="node"><b>Node groups</b><small>image pull on schedule</small></div>
+    </div>
+    <div class="imgs">images: <code>ocr-vlm-qwen</code> &nbsp; <code>ocr-api-rust</code> &nbsp; <code>ocr-worker-rt</code> &nbsp;·&nbsp; ECR is a registry only — CodeBuild does the build (AWS analog of <code>az acr build</code>)</div>
+  </div>
+
+  <!-- AUTOSCALING SIGNALS -->
+  <div class="signals" style="grid-template-columns: repeat(5,1fr);">
+    <div></div>
+    <div class="signal">CPU &gt; 70%</div>
+    <div class="signal">queue ≥ 1 &nbsp;(redis <code style="background:none">ocr_tasks</code>)</div>
+    <div class="signal green">batch 4 / 100ms · PP-DocLayoutV3</div>
+    <div class="signal">waiting ≥ 1 &nbsp;(vllm)</div>
+  </div>
+
+  <!-- PIPELINE -->
+  <div class="pipe">
+    <!-- 1 AI Agent -->
+    <div class="stage-wrap"><div class="stage">
+      <div class="top"><span class="glyph">🤖</span></div>
+      <h3>AI Agent</h3>
+      <div class="role">Sends document (PDF / Image)</div>
+      <span class="tag edge">client</span>
+    </div><div class="arrow"><span class="n">1</span><span class="glyph fwd">→</span></div></div>
+
+    <!-- 2 API Gateway -->
+    <div class="stage-wrap"><div class="stage">
+      <div class="top"><span class="glyph">🛡️</span></div>
+      <h3>Amazon API Gateway</h3>
+      <div class="role">Ingestion &amp; Auth (zero-trust edge)</div>
+      <ul>
+        <li>AWS WAF · OWASP Top-10</li>
+        <li>VPC Link → internal NLB<br><small style="color:#8a93a6">(AWS LB Controller)</small></li>
+        <li>JWT authorizer (Cognito)</li>
+        <li>Stage throttling</li>
+      </ul>
+      <span class="tag edge">WAF · VPC Link</span>
+    </div><div class="arrow"><span class="n">2</span><span class="glyph fwd">→</span></div></div>
+
+    <!-- 3 Rust API -->
+    <div class="stage-wrap"><div class="stage">
+      <div class="top"><span class="glyph">🦀</span></div>
+      <h3>Rust API</h3>
+      <div class="role">Task Orchestrator &amp; Queue Producer</div>
+      <ul>
+        <li>Rasterize → <code style="background:none">/dev/shm</code></li>
+        <li>Enqueue tasks in Redis</li>
+        <li>Internal NLB backend</li>
+      </ul>
+      <span class="tag cpu">apinp · m6i.large</span>
+    </div><div class="arrow"><span class="n">3</span><span class="glyph fwd">→</span></div></div>
+
+    <!-- 4 Worker -->
+    <div class="stage-wrap"><div class="stage">
+      <div class="top"><span class="glyph">🐍➕🟩</span></div>
+      <h3>Layout Worker</h3>
+      <div class="role">Consumer · GLM-OCR SDK</div>
+      <ul>
+        <li>Layout detection model</li>
+        <li>PP-DocLayoutV3</li>
+        <li>Calls vLLM for image/chart</li>
+      </ul>
+      <span class="tag gpu">gpunpt4 · T4 (g4dn.4xlarge)</span>
+    </div><div class="arrow">
+      <span class="n">4</span>
+      <span class="glyph fwd">→</span>
+      <span class="glyph back">←</span>
+      <span class="lbl">image / chart req ⇅ enriched OCR</span>
+    </div></div>
+
+    <!-- 5 vLLM -->
+    <div class="stage-wrap"><div class="stage">
+      <div class="top"><span class="glyph">🔎</span></div>
+      <h3>vLLM Server</h3>
+      <div class="role">Qwen3.5-4B · visual understanding</div>
+      <ul>
+        <li>Image &amp; chart description</li>
+        <li>High-throughput inference</li>
+      </ul>
+      <span class="tag gpu">gpunpa100 · L40S 48GB (g6e.4xlarge)</span>
+    </div></div>
+
+    <!-- stats -->
+    <div class="stats">
+      <div class="row"><span class="ic">📋</span><span>MAX_NUM_SEQS &nbsp;<b>256</b></span></div>
+      <div class="row"><span class="ic">📐</span><span>MAX_MODEL_LEN &nbsp;<b>16384</b></span></div>
+      <div class="row"><span class="ic">🧮</span><span>batched tokens &nbsp;<b>16K</b></span></div>
+      <div class="row"><span class="ic">🎛️</span><span>GPU_MEMORY &nbsp;<b>0.85</b></span></div>
+      <div class="row"><span class="ic">📈</span><span>MTP &nbsp;<b>+50%</b></span></div>
+    </div>
+  </div>
+
+  <!-- LOWER BAND -->
+  <div class="lower">
+    <div class="store">
+      <div class="head">
+        <div class="redis">🧱</div>
+        <div><h3>Redis — State Store</h3><small>redisnp · r6i.xlarge &nbsp;·&nbsp; async state (stages 2–4)</small></div>
+      </div>
+      <ul>
+        <li>Task queue (<code style="background:none">ocr_tasks</code>)</li>
+        <li>File storage (base64)</li>
+        <li>OCR results</li>
+        <li>Status &amp; metadata</li>
+      </ul>
+    </div>
+    <div class="mini">
+      <h4>GPU Optimizations</h4>
+      <div>🧠 &nbsp;<code style="background:none">/dev/shm</code> shared memory</div>
+      <div>⚡ &nbsp;Zero-copy handoff</div>
+      <div>🔗 &nbsp;RAM handoff</div>
+    </div>
+    <div class="mini">
+      <h4>vLLM Features</h4>
+      <div>🕸️ &nbsp;CUDA graphs</div>
+      <div>🧩 &nbsp;PagedAttention</div>
+      <div>♾️ &nbsp;Continuous batching</div>
+    </div>
+  </div>
+
+  <!-- LEGEND + VALUES -->
+  <div class="foot">
+    <div class="legend">
+      <div><span class="ln solid"></span> Request Flow</div>
+      <div><span class="ln dash-p"></span> State / Data Flow (Redis)</div>
+      <div><span class="ln dash-g"></span> Auto-scaling Signal (KEDA)</div>
+    </div>
+    <div class="values">
+      <div class="value"><div class="h">🚀 Event-Driven</div><p>Queue-based, fully asynchronous pipeline</p></div>
+      <div class="value"><div class="h">⚡ Low Latency</div><p>Dynamic batching &amp; high-throughput LLM</p></div>
+      <div class="value"><div class="h">🛡️ Scalable</div><p>Independent scaling of all components</p></div>
+      <div class="value"><div class="h">📊 Cost-Efficient</div><p>Scale-to-zero &amp; GPU optimization</p></div>
+    </div>
+  </div>
+
+  <div class="note">
+    EKS-specific vs. AKS: <b>API Management → API Gateway + WAF + VPC Link</b> &nbsp;·&nbsp;
+    <b>ACR build → CodeBuild + ECR</b> &nbsp;·&nbsp; <b>Blob → EFS (RWX)</b> &nbsp;·&nbsp;
+    <b>GPU Operator → NVIDIA device plugin</b> &nbsp;·&nbsp; <b>managed identity → IAM OIDC / IRSA</b> &nbsp;·&nbsp;
+    <b>Ingress → AWS LB Controller + internal NLB</b> &nbsp;·&nbsp; <b>A100 80GB → L40S 48GB</b>. See <code>docs/cloud_comparison.md</code>.
+  </div>
+
+</div>
+</body>
+</html>

@@ -12,6 +12,10 @@ kind: StorageClass
 metadata:
   name: efs-sc
 provisioner: efs.csi.aws.com
+# TLS is required — the EFS file-system policy (terraform/eks/efs.tf) denies any
+# access where aws:SecureTransport is false, so non-TLS mounts are rejected.
+mountOptions:
+  - tls
 parameters:
   provisioningMode: efs-ap
   fileSystemId: <EFS_FILE_SYSTEM_ID>

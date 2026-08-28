@@ -182,3 +182,24 @@ cython_debug/
 
 # macOS
 .DS_Store
+
+# Terraform (applies to every module: terraform/eks, terraform/perimeter, ...)
+# State can contain secrets and infra detail — never commit it.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+# terraform.tfvars / *.auto.tfvars may hold account-specific values or secrets.
+*.tfvars
+*.auto.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# The provider lock is generated per-platform here (darwin_arm64 only), so keep it
+# out to avoid hash-mismatch failures on other machines / CI.
+.terraform.lock.hcl
+# ...but keep the committable examples.
+!*.tfvars.example

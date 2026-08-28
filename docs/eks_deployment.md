@@ -15,6 +15,54 @@
 > **`g6e.4xlarge`** (1× NVIDIA **L40S 48GB**). See
 > [`cloud_comparison.md`](cloud_comparison.md) for the full instance mapping.
 
+### Deployment Order at a Glance
+
+Two ways to build the AWS infrastructure in §1–§3:
+
+- **Terraform (recommended)** — `terraform apply` in [`terraform/eks`](../terraform/eks)
+  creates the VPC, IAM roles + OIDC provider, the EKS cluster, all 5 node groups,
+  the EFS filesystem + CSI addon + mount targets, the ECR repos, and the AWS Load
+  Balancer Controller's IAM policy + IRSA role in one shot. It **replaces** the
+  manual commands in §1.1–§1.5, the EFS/CSI/mount-target parts of §2.1, the
+  repo-creation step in §3, and steps 1–2 of §6.1.
+- **Manual `aws` CLI** — follow §1–§3 exactly as written below.
+
+Whichever you pick, the end-to-end sequence is the same:
+
+1. **Infrastructure** — `terraform apply` (or manual §1 + §2.1 EFS + §3 repos).
+2. **kubeconfig** — `aws eks update-kubeconfig …` (Terraform prints the exact
+   command as the `update_kubeconfig_command` output).
+3. **Cluster add-ons** — NVIDIA device plugin,
+   KEDA + kube-prometheus-stack (§4), AWS Load Balancer Controller + its IRSA (§6.1).
+4. **Storage objects** — apply the EFS StorageClass (inject the filesystem ID from
+   `terraform output efs_id`) and the PVC (§2.1 steps 6–8).
+5. **Build & push images** to ECR (§3 — CodeBuild or local buildx).
+6. **Ingest model weights** — run the ingestion **Job** (§2.2).
+7. **Deploy the app stack + monitoring** — `./k8s/eks/deploy.sh` (§4) and the
+   ServiceMonitors (§5).
+8. **Perimeter** — API Gateway + VPC Link + Cognito + WAF (§6).
+9. **Cost controls & dashboards** — scale-to-zero (§8), Grafana (§7).
+
+> **⚠️ The model-weights EFS holds no data on a fresh deployment.** The weights
+> live on the EFS volume, **not** in Terraform state or any container image — so a
+> brand-new cluster (or a rebuilt one after `terraform destroy` / tearing the EFS
+> down) starts with an **empty** volume. You must always run the ingestion Job in
+> step 6 before the worker/vLLM pods start, or they will fail to find the models.
+> Terraform recreates the *filesystem*; only the Job repopulates its *contents*.
+
+> **⚠️ The §6 perimeter is a separate Terraform root (`terraform/perimeter`), not
+> part of `terraform/eks`.** API Gateway, the VPC Link, Cognito, and WAF live in
+> their own module that resolves the cluster VPC/subnets/SG and the internal NLB
+> **live by tag** — so the two roots stay decoupled (no shared state). Apply order:
+> `terraform/eks` → deploy the `ocr-api-service` Service (the LB Controller
+> provisions the NLB) → `terraform/perimeter`. **Destroy in reverse**, while the
+> NLB still exists (a destroy plan re-reads those data sources; a missing NLB
+> errors). A perimeter from a previous cluster points at a deleted NLB and will not
+> work — rebuild it against the new one. §6.3 also documents a hand-rolled `aws`
+> CLI alternative if you'd rather not use the module.
+
+---
+
 ### 0. Prerequisites & Environment Variables
 
 🔑 Authenticate AWS CLI Session
@@ -42,6 +90,7 @@ export ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 ### 1. Infrastructure Setup: EKS & Storage
 
 Unlike `az aks create` / `gcloud container clusters create` — which implicitly provision networking and identity — EKS requires you to bring your own **IAM roles**, **VPC/subnets**, and an **OIDC provider**. We create them explicitly below.
+If you choose to use terraform deployment go directly to section §1.6
 
 #### 1.1 IAM Roles
 
@@ -161,6 +210,61 @@ aws iam create-open-id-connect-provider \
   --thumbprint-list 9e99a48a9960b14926bb7f3b02e22da2b0ab7280
 ```
 
+> **💡 Alternative — EKS Pod Identity (skip the OIDC provider).** IRSA is not the
+> only way to hand a pod AWS permissions. **EKS Pod Identity** is the newer,
+> AWS-recommended mechanism that *"delivers temporary AWS credentials to pods …
+> without requiring an IAM OIDC identity provider"*
+> ([EKS Pod Identity vs IRSA](https://docs.aws.amazon.com/eks/latest/best-practices/cluster-access-management.html)).
+> Instead of registering the OIDC provider above and writing federated
+> `AssumeRoleWithWebIdentity` trust policies (the blocks in §2.1 and §6.1), you
+> install one add-on and create a *Pod Identity Association* that maps a role to a
+> `namespace/serviceaccount`. The role's trust policy becomes a simple principal —
+> `pods.eks.amazonaws.com` with `sts:AssumeRole` + `sts:TagSession` — with no OIDC
+> URL, `sub`/`aud` match, or thumbprint to maintain, and the same role is reusable
+> across clusters.
+>
+> **This is an opt-in alternative — pick *either* IRSA (above) *or* Pod Identity, not both.** To use Pod Identity instead:
+>
+> ```bash
+> # 1. Install the Pod Identity Agent add-on (replaces the OIDC provider step)
+> aws eks create-addon \
+>   --cluster-name $EKS_CLUSTER_NAME --region $AWS_REGION \
+>   --addon-name eks-pod-identity-agent
+>
+> # 2. Role trusted by the Pod Identity service (not a federated OIDC trust)
+> cat > pod-identity-trust.json <<'EOF'
+> { "Version": "2012-10-17", "Statement": [{
+>   "Effect": "Allow",
+>   "Principal": { "Service": "pods.eks.amazonaws.com" },
+>   "Action": ["sts:AssumeRole", "sts:TagSession"]
+> }] }
+> EOF
+> aws iam create-role --role-name eksOcrEfsCsiRole \
+>   --assume-role-policy-document file://pod-identity-trust.json
+> aws iam attach-role-policy --role-name eksOcrEfsCsiRole \
+>   --policy-arn arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy
+>
+> # 3. Bind the role to the EFS CSI controller service account
+> aws eks create-pod-identity-association \
+>   --cluster-name $EKS_CLUSTER_NAME --region $AWS_REGION \
+>   --namespace kube-system --service-account efs-csi-controller-sa \
+>   --role-arn arn:aws:iam::${ACCOUNT_ID}:role/eksOcrEfsCsiRole
+> ```
+>
+> `eksctl create podidentityassociation …` does steps 2–3 in one command if you
+> prefer. When using this path, **skip §1.4 (OIDC provider) and the IRSA trust
+> blocks in §2.1 / §6.1** — create the roles with the `pods.eks.amazonaws.com`
+> trust above and a Pod Identity Association for each service account instead
+> (`efs-csi-controller-sa` in §2.1, `aws-load-balancer-controller` in §6.1).
+>
+> **Caveats:** the **EFS CSI driver** documents a first-class Pod Identity path
+> ([efs-csi docs](https://docs.aws.amazon.com/eks/latest/userguide/efs-csi.html),
+> "If using Pod Identities"). The **AWS Load Balancer Controller** supports Pod
+> Identity only on recent controller builds — if you run an older chart, keep IRSA
+> for that role. The rest of this guide sticks with IRSA (the OIDC provider above)
+> because it's the most broadly compatible path and matches the `terraform/eks`
+> module.
+
 #### 1.5 Create Managed Node Groups
 
 Five node groups. First an **untainted `systemnp` pool** for cluster add-ons (see the note below), then four workload pools mirroring the AKS/GKE layout. The two GPU groups use the EKS **GPU-optimized AMI** (`AL2023_x86_64_NVIDIA`), which pre-ships the NVIDIA drivers — we taint them with `nvidia.com/gpu=present:NoSchedule` (GKE-style) so only GPU workloads land there. The Redis and API groups use the standard AMI and custom `sku` taints plus `app` labels.
@@ -238,21 +342,9 @@ aws eks create-nodegroup \
 > `eks.amazonaws.com/nodegroup=<name>`, which our GPU deployments use as their
 > `nodeSelector` — no manual labeling required.
 
-> **⚠️ Disk size is immutable on a managed node group.** `diskSize` can only be
-> set at creation (there is no launch template here). If a GPU group was created
-> with the 20 GB default and hits `DiskPressure`, you must **delete and recreate**
-> the node group with `--disk-size 100` — recreating under the *same name*
-> preserves the `eks.amazonaws.com/nodegroup=<name>` label the GPU `nodeSelector`
-> relies on, so no manifest changes are needed.
+#### 1.6 🛡️ GPU Lifecycle on EKS: Device Plugin
 
-> **⚠️ `InsufficientInstanceCapacity`.** `g6e.4xlarge` is capacity-constrained in
-> some AZs (we hit it in `eu-central-1b`). If node creation fails with this error,
-> pin `--subnets` to a subnet in an AZ that has capacity (e.g. the 1a private
-> subnet) rather than passing all subnets.
-
-#### 🛡️ GPU Lifecycle on EKS: Device Plugin
-
-Because the `AL2023_x86_64_NVIDIA` AMI already contains the NVIDIA kernel drivers and container toolkit, we do **not** need the full GPU Operator (as AKS does to compile drivers). We only install the **NVIDIA device plugin**, which advertises `nvidia.com/gpu` capacity to the scheduler. It must tolerate the GPU taint, so we pass a values file.
+With the GPU node groups up, make their GPUs **schedulable**. Because the `AL2023_x86_64_NVIDIA` AMI already contains the NVIDIA kernel drivers and container toolkit, we do **not** need the full GPU Operator (as AKS does to compile drivers). We only install the **NVIDIA device plugin**, which advertises `nvidia.com/gpu` capacity to the scheduler. It must tolerate the GPU taint, so we pass a values file.
 
 ```bash
 # 1. Add the NVIDIA device-plugin Helm repo
@@ -268,7 +360,7 @@ helm install nvidia-device-plugin nvdp/nvidia-device-plugin \
 kubectl -n kube-system rollout status ds/nvidia-device-plugin
 ```
 
-#### 🔍 Verify GPU Schedulability
+#### 1.7 🔍 Verify GPU Schedulability
 To verify that the device plugin has reported `nvidia.com/gpu` capacity to Kubernetes:
 
 ```bash
@@ -292,7 +384,14 @@ Models are treated as **heavy binary data**. Ingest them directly inside the clu
 
 #### 2.1 Provision Storage (EFS + PVC)
 
-First create an **IRSA role** for the CSI driver, install the addon *with that role*, create the filesystem, then apply the RWX StorageClass and PVC.
+This step has three parts, and which of the first two you run depends on your path:
+
+- **A. Manual path** — create the AWS infrastructure (IRSA role, CSI addon, EFS
+  filesystem, mount targets, NFS rule). **Skip entirely if you used Terraform.**
+- **B. Terraform path** — that infrastructure already exists; you only export the
+  one value the next commands need. **Skip if you ran part A.**
+- **C. Both paths** — apply the Kubernetes storage objects (StorageClass + PVC) and
+  verify. **Everyone runs this**, regardless of path.
 
 > **⚠️ The EFS CSI driver needs its own IAM role (IRSA).** In dynamic `efs-ap`
 > mode the controller calls `elasticfilesystem:DescribeAccessPoints` /
@@ -303,6 +402,14 @@ First create an **IRSA role** for the CSI driver, install the addon *with that r
 > trusted by the EKS *service* and carries only control-plane permissions; a pod
 > cannot assume it. IRSA requires a role trusted by the cluster's **OIDC
 > provider** (created in 1.4) and scoped to the `efs-csi-controller-sa` account.
+
+---
+
+##### A. Manual path — create the AWS infrastructure
+
+Run this **only if you did *not* use Terraform.** Each step creates a resource and
+exports the IDs the later steps reference (`$EFS_ID`, `$CLUSTER_SG`). When you finish
+step 5, skip past part B straight to part C. *(Terraform users: go to part B now.)*
 
 ```bash
 # 1. Create the IRSA role for the EFS CSI controller
@@ -354,6 +461,7 @@ for SUBNET in $SUBNET_ARR; do
     --subnet-id $SUBNET \
     --security-groups $SECURITY_GROUP
 done
+```
 
 > **⚠️ EFS needs a mount target in *every* AZ a pod can land in.** A mount target
 > is per-AZ: a pod on a node in an AZ with no mount target fails to start with
@@ -367,6 +475,7 @@ done
 > `available`. Looping over `$SUBNET_ARR` above covers this only if that array
 > includes a private subnet in each AZ your node groups use.
 
+```bash
 # 5. Allow inbound NFS (TCP 2049) into the mount-target SG so nodes can mount EFS.
 #    IMPORTANT: EKS managed nodes do NOT use the CloudFormation SG — they attach
 #    the EKS-managed *cluster security group*. The NFS rule must therefore allow
@@ -380,7 +489,30 @@ echo "EKS cluster SG (attached to nodes): $CLUSTER_SG"
 aws ec2 authorize-security-group-ingress --group-id $SECURITY_GROUP \
   --protocol tcp --port 2049 --source-group $CLUSTER_SG --region $AWS_REGION \
   2>/dev/null || echo "NFS/2049 ingress rule (from cluster SG) already present"
+```
 
+---
+
+##### B. Terraform path — export the value the next steps need
+
+Terraform already created the IRSA role, CSI addon, EFS filesystem, mount targets,
+and NFS rule (everything in part A). You only need the **filesystem ID** in your
+shell so the `kubectl` commands below can reference it — nothing is created here:
+
+```bash
+# Terraform path only — pull the filesystem ID from module output
+export EFS_ID=$(terraform -chdir=terraform/eks output -raw efs_id)
+echo "EFS filesystem: $EFS_ID"
+```
+
+---
+
+##### C. Both paths — apply the Kubernetes storage objects & verify
+
+With `$EFS_ID` set in your shell (from part A step 3, or part B above), create the
+RWX StorageClass and PVC — identical on either path:
+
+```bash
 # 6. Point the StorageClass at the filesystem and apply it
 sed "s|<EFS_FILE_SYSTEM_ID>|$EFS_ID|" k8s/eks/infra/efs-storageclass.yaml | kubectl apply -f -
 
@@ -465,48 +597,26 @@ kubectl run weights-debug \
 ### 📦 3. Build & Push Container Images
 
 You need the three images in ECR as **`linux/amd64`** (the arch of the EKS GPU
-nodes). Pick one path:
+nodes). This course builds them on **AWS CodeBuild**: the build runs in the cloud
+on native amd64 agents and pushes straight to ECR, so nothing builds on your
+machine. This is the AWS equivalent of `az acr build`. (Unlike Azure's ACR, **ECR
+is a registry only and cannot build images** — see
+[`feature_comments.md`](feature_comments.md).)
 
-- **Option 1 — Build locally**, then push. Simple, but slow on Apple Silicon:
-  a Mac builds `arm64` by default, so you must cross-build with
-  `--platform linux/amd64` under QEMU emulation.
-- **Option 2 — Build on AWS CodeBuild.** The build runs in the cloud on native
-  amd64 agents and pushes straight to ECR — nothing builds on your machine.
-  This is the AWS equivalent of `az acr build`. (Unlike Azure's ACR, **ECR is a
-  registry only and cannot build images** — see
-  [`feature_comments.md`](feature_comments.md).)
+> **Alternative — build locally.** You can build the images yourself with Docker
+> Buildx instead of using CodeBuild: create the ECR repos, log in with
+> `aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY`,
+> then run `docker buildx build --platform linux/amd64 -t $ECR_REGISTRY/<image>:latest --push <context>`
+> once per image (contexts `./server`, `./client_rt_producer`,
+> `./client_rt_consumer`). The explicit `--platform linux/amd64` is required: an
+> Apple-Silicon Mac builds `arm64` by default, so the CUDA-heavy images cross-build
+> under **slow QEMU emulation** — which is why CodeBuild is the documented path.
 
-#### Option 1 — Local build & push
-
-```bash
-# 1. Create the ECR repositories (one per image)
-for REPO in ocr-vlm-qwen ocr-api-rust ocr-worker-rt ; do
-  aws ecr create-repository --repository-name $REPO --region $AWS_REGION || true
-done
-
-# 2. Authenticate Docker against ECR
-aws ecr get-login-password --region $AWS_REGION | \
-  docker login --username AWS --password-stdin $ECR_REGISTRY
-
-# 3. Build and push vLLM Inference Server (--platform: EKS nodes are x86_64)
-docker buildx build --platform linux/amd64 -t ${ECR_REGISTRY}/ocr-vlm-qwen:latest --push ./server
-
-# 4. Build and push Rust Producer API Gateway
-docker buildx build --platform linux/amd64 -t ${ECR_REGISTRY}/ocr-api-rust:latest --push ./client_rt_producer
-
-# 5. Build and push Python Consumer Worker
-docker buildx build --platform linux/amd64 -t ${ECR_REGISTRY}/ocr-worker-rt:latest --push ./client_rt_consumer
-```
-
-> On an Apple-Silicon Mac these cross-builds run under QEMU emulation and are
-> slow (the CUDA-heavy `ocr-vlm-qwen` and `ocr-worker-rt` especially). If you
-> hit that wall, use Option 2.
-
-#### Option 2 — Build on AWS CodeBuild (no local build)
+#### Build on AWS CodeBuild
 
 The build runs on AWS and pushes to ECR for you. Three committed files drive it:
-- [`buildspec.yml`](../buildspec.yml) — the build recipe (ECR login, create
-  repos, build all three images, push).
+- [`codebuild/buildspec.yml`](../codebuild/buildspec.yml) — the build recipe (ECR
+  login, create repos, build all three images, push).
 - [`k8s/eks/codebuild-setup.sh`](../k8s/eks/codebuild-setup.sh) — one-time
   creation of the IAM service role + CodeBuild project (`SOURCE_TYPE=GITHUB|S3`;
   for S3 it also creates the source bucket + grants the role read access).
@@ -515,20 +625,7 @@ The build runs on AWS and pushes to ECR for you. Three committed files drive it:
 
 The project can pull the source from **GitHub** or from **S3** — pick one.
 
-**2a — GitHub source** (default). Requires your GitHub account connected to
-CodeBuild first (Console → Developer Tools → Settings → Connections, or
-`aws codebuild import-source-credentials`):
-
-```bash
-# 1. One-time: create the IAM role + CodeBuild project (GitHub source)
-./k8s/eks/codebuild-setup.sh
-
-# 2. Launch a cloud build (builds + pushes all three images to ECR)
-aws codebuild start-build --project-name ocr-image-build --region $AWS_REGION \
-  --query 'build.id' --output text
-```
-
-**2b — S3 source** (no GitHub / OAuth). The build pulls a zip of the repo from
+**S3 source**. The build pulls a zip of the repo from
 an S3 bucket. Use this if you don't want to wire up GitHub. (`NO_SOURCE` won't
 work — the build needs the repo contents.)
 
@@ -575,9 +672,6 @@ done
 > project because `docker build` needs Docker-in-Docker. The vLLM image is large;
 > `codebuild-setup.sh` uses `BUILD_GENERAL1_LARGE` for the extra disk/RAM (bump to
 > `BUILD_GENERAL1_2XLARGE` if `docker build` runs out of disk).
-
-> To build the **slim** variants instead, point the buildspec at the slim
-> Dockerfiles (e.g. `docker build -f server/Dockerfile.slim ...`).
 
 ---
 
@@ -771,6 +865,24 @@ The controller reconciles the internal NLB from the service annotations. It requ
 >   … no endpoints available for service "aws-load-balancer-webhook-service"
 > ```
 
+The controller needs two AWS things (an IAM **policy** and an IRSA **role**) plus
+two Kubernetes things (a **ServiceAccount** and the **Helm** release). The AWS
+half is created differently depending on your path; the Kubernetes half is the
+same for both. Both paths export `$VPC_ID` and `$ROLE_ARN` for the shared steps.
+
+##### A. Terraform path — the IAM policy + role already exist
+
+`terraform apply` created them (`terraform/eks/lb_controller_iam.tf`, same IRSA
+pattern as the EFS CSI role). Skip the policy/role creation and just read the two
+values the install needs from outputs:
+
+```bash
+export VPC_ID=$(terraform -chdir=terraform/eks output -raw vpc_id)
+export ROLE_ARN=$(terraform -chdir=terraform/eks output -raw lb_controller_role_arn)
+```
+
+##### B. Manual path — create the IAM policy + IRSA role
+
 ```bash
 export OIDC_ID=$(aws eks describe-cluster --name $EKS_CLUSTER_NAME \
   --query "cluster.identity.oidc.issuer" --output text | sed 's|https://||')
@@ -799,10 +911,16 @@ aws iam create-role --role-name AmazonEKSLoadBalancerControllerRole-$EKS_CLUSTER
 aws iam attach-role-policy --role-name AmazonEKSLoadBalancerControllerRole-$EKS_CLUSTER_NAME \
   --policy-arn arn:aws:iam::${ACCOUNT_ID}:policy/AWSLoadBalancerControllerIAMPolicy
 
+export ROLE_ARN=arn:aws:iam::${ACCOUNT_ID}:role/AmazonEKSLoadBalancerControllerRole-$EKS_CLUSTER_NAME
+```
+
+##### C. Both paths — ServiceAccount, install, verify
+
+```bash
 # 3. Create the annotated ServiceAccount (chart is installed with create=false)
 kubectl create sa aws-load-balancer-controller -n kube-system --dry-run=client -o yaml | kubectl apply -f -
 kubectl annotate sa aws-load-balancer-controller -n kube-system --overwrite \
-  eks.amazonaws.com/role-arn=arn:aws:iam::${ACCOUNT_ID}:role/AmazonEKSLoadBalancerControllerRole-$EKS_CLUSTER_NAME
+  eks.amazonaws.com/role-arn=$ROLE_ARN
 
 # 4. Install the controller. Pass region + vpcId explicitly: EKS enforces an
 #    IMDSv2 hop limit that stops pods reaching instance metadata, so without
@@ -834,6 +952,11 @@ metadata:
 ```
 
 #### 2. Retrieve the Internal Load Balancer DNS
+> Needed only for the **manual path** (§6.3-B) — the Terraform path resolves the
+> NLB listener by tag. Either way it's a good check that the NLB provisioned before
+> you build the perimeter (an empty result means the LB Controller hasn't finished;
+> see §6.1).
+
 ```bash
 export NLB_DNS=$(kubectl get svc ocr-api-service \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
@@ -849,6 +972,47 @@ Create a **VPC Link** to the internal NLB, then an **HTTP API** that maps `POST 
 > with the `Authorization: Bearer <token>` header — not `x-api-key`. Rate limiting
 > comes from stage-level `DefaultRouteSettings` / per-route throttling instead of
 > per-key quotas.
+
+Two paths build the **identical** perimeter — VPC Link → NLB, an HTTP API mapping
+`POST /ocr/process` to the NLB listener, a Cognito user pool + JWT authorizer, and
+stage throttling. **Pick one; do not run both** — they would create duplicate APIs
+and user pools. Either way the internal NLB from §4 (`ocr-api-service`) must already
+exist first.
+
+##### A. Terraform path — `terraform/perimeter`
+
+The `terraform/perimeter` module creates the whole perimeter and resolves the VPC,
+private subnets, cluster SG, and the NLB listener **live by tag** — no reference to
+the `terraform/eks` state, and no manual `$NLB_DNS` / `$SUBNET_ARR` / `$SECURITY_GROUP`
+wiring. Skip §6.2 and the entire manual block in path B.
+
+```bash
+terraform -chdir=terraform/perimeter apply
+
+# Export the values the token + request steps (§6.4) need. These use the SAME
+# names the manual path sets, so §6.4 works verbatim either way.
+export API_ID=$(terraform -chdir=terraform/perimeter output -raw api_id)
+export JWT_AUDIENCE=$(terraform -chdir=terraform/perimeter output -raw app_client_id)
+export USER_POOL_ID=$(terraform -chdir=terraform/perimeter output -raw user_pool_id)
+
+# The Cognito test user is a credential, so Terraform deliberately does NOT create
+# it — add it once by hand (--permanent skips the FORCE_CHANGE_PASSWORD challenge).
+aws cognito-idp admin-create-user \
+  --user-pool-id "$USER_POOL_ID" --username api-user \
+  --message-action SUPPRESS >/dev/null
+aws cognito-idp admin-set-user-password \
+  --user-pool-id "$USER_POOL_ID" --username api-user \
+  --password 'ChangeMe!2026' --permanent
+```
+
+> **⚠️ WAF is created but not attached.** WAFv2 cannot associate with an
+> `apigatewayv2` HTTP API (only CloudFront, ALB, REST API, AppSync, App Runner, and
+> Cognito user pools are WAF-associable). The module still builds the Web ACL and
+> exposes it as the `web_acl_arn` output; attach it to a CloudFront/ALB/REST
+> front-door via the module's `waf_association_arn` variable if you add one later.
+> Set `enable_waf=false` to skip creating the ACL entirely.
+
+##### B. Manual path — aws CLI
 
 ```bash
 # 1. Create a VPC Link targeting the private subnets + cluster SG

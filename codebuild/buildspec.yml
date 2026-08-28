@@ -1,0 +1,38 @@
+# AWS CodeBuild recipe: build the three OCR images on native amd64 agents and
+# push them to ECR — the "build in the cloud" alternative to building locally.
+# ECR is a registry only (no build service), so the build happens here in
+# CodeBuild. See docs/eks_deployment.md Section 3, Option 2.
+#
+# Runs on the default LINUX_CONTAINER standard image, which is amd64 — so the
+# images are EKS-compatible with no --platform flag. Requires privilegedMode
+# (Docker-in-Docker); the CodeBuild project created by
+# k8s/eks/codebuild-setup.sh enables it.
+version: 0.2
+
+env:
+  variables:
+    AWS_REGION: eu-central-1
+
+phases:
+  pre_build:
+    commands:
+      - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - ECR_REGISTRY=${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+      - echo "Logging in to ECR ${ECR_REGISTRY}"
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+      - |
+        for REPO in ocr-vlm-qwen ocr-api-rust ocr-worker-rt ; do
+          aws ecr describe-repositories --repository-names "$REPO" --region "$AWS_REGION" >/dev/null 2>&1 \
+            || aws ecr create-repository --repository-name "$REPO" --region "$AWS_REGION"
+        done
+  build:
+    commands:
+      - docker build -t ${ECR_REGISTRY}/ocr-vlm-qwen:latest ./server
+      - docker build -t ${ECR_REGISTRY}/ocr-api-rust:latest ./client_rt_producer
+      - docker build -t ${ECR_REGISTRY}/ocr-worker-rt:latest ./client_rt_consumer
+  post_build:
+    commands:
+      - docker push ${ECR_REGISTRY}/ocr-vlm-qwen:latest
+      - docker push ${ECR_REGISTRY}/ocr-api-rust:latest
+      - docker push ${ECR_REGISTRY}/ocr-worker-rt:latest
+      - echo "Pushed all three images to ${ECR_REGISTRY}"

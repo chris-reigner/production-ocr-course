@@ -107,9 +107,9 @@ ENV_ARG="type=LINUX_CONTAINER,image=aws/codebuild/amazonlinux2-x86_64-standard:5
 
 SRC_VERSION_ARG=()
 if [ "$SOURCE_TYPE" = "S3" ]; then
-  SOURCE_ARG="type=S3,location=${S3_BUCKET}/${S3_KEY},buildspec=buildspec.yml"
+  SOURCE_ARG="type=S3,location=${S3_BUCKET}/${S3_KEY},buildspec=codebuild/buildspec.yml"
 else
-  SOURCE_ARG="type=GITHUB,location=${GITHUB_REPO},buildspec=buildspec.yml"
+  SOURCE_ARG="type=GITHUB,location=${GITHUB_REPO},buildspec=codebuild/buildspec.yml"
   SRC_VERSION_ARG=(--source-version "$SOURCE_BRANCH")
 fi
 
