@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root{
+    --ink:#0f172a; --sub:#475569; --line:#e2e8f0; --bg:#f8fafc;
+    --host:#6366f1; --cluster:#14b8a6; --ok:#0ea5e9; --aws:#f59e0b;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased}
+  .wrap{width:1180px;padding:52px 56px 60px}
+  .eyebrow{font-size:15px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--sub)}
+  h1{font-size:32px;font-weight:750;margin:8px 0 6px;letter-spacing:-.02em}
+  .lede{font-size:17px;color:var(--sub);margin-bottom:34px}
+
+  .layer{position:relative;background:var(--bg);border:1px solid var(--line);border-radius:20px;padding:24px 26px;box-shadow:0 1px 0 rgba(15,23,42,.03),0 14px 30px -20px rgba(15,23,42,.28)}
+  .lhead{display:flex;align-items:center;gap:15px;margin-bottom:18px}
+  .badge{width:50px;height:50px;border-radius:14px;display:flex;align-items:center;justify-content:center;color:#fff;flex:none;box-shadow:0 8px 18px -8px currentColor}
+  .badge svg{width:26px;height:26px;stroke:#fff;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+  .tag{font-size:13px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--sub)}
+  .ltitle{font-size:20px;font-weight:700;margin-top:2px}
+  .comp{display:flex;gap:16px}
+  .box{flex:1;background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+  .box .name{font-size:16px;font-weight:650;margin-bottom:4px}
+  .box .meta{font-size:14px;color:var(--sub);line-height:1.5}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13.5px;background:#eef2f7;border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:#334155}
+
+  .pill{position:absolute;top:-14px;right:24px;display:flex;align-items:center;gap:7px;font-size:13px;font-weight:650;color:#fff;padding:6px 14px;border-radius:999px;box-shadow:0 8px 18px -8px rgba(0,0,0,.4)}
+  .pill svg{width:15px;height:15px;stroke:#fff;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+  .pill.ships{background:var(--aws)}
+  .pill.install{background:var(--cluster)}
+
+  .host .badge{background:var(--host);color:var(--host)}
+  .cluster .badge{background:var(--cluster);color:var(--cluster)}
+  .result .badge{background:var(--ok);color:var(--ok)}
+
+  .flow{display:flex;flex-direction:column;align-items:center;gap:0}
+  .arrow{height:40px;display:flex;align-items:center;justify-content:center;color:#94a3b8}
+  .arrow svg{width:30px;height:30px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+  .layer,.result{width:100%}
+  .result{background:linear-gradient(180deg,#f0f9ff,#f8fafc);border:1px solid #bae6fd;border-radius:20px;padding:22px 26px;display:flex;align-items:center;gap:16px}
+  .result .txt{font-size:16.5px;line-height:1.5}
+  .result .txt b{font-weight:700}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">GPU enablement on EKS</div>
+  <h1>Two layers before a pod can see a GPU</h1>
+  <div class="lede">The driver makes the hardware work; the device plugin makes Kubernetes aware it exists. You need both.</div>
+
+  <div class="flow">
+    <div class="layer host">
+      <div class="pill ships"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>Ships in the AWS GPU AMI</div>
+      <div class="lhead">
+        <div class="badge"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></div>
+        <div><div class="tag">Layer 1 · node-level</div><div class="ltitle">Host GPU enablement</div></div>
+      </div>
+      <div class="comp">
+        <div class="box"><div class="name">NVIDIA kernel driver</div><div class="meta">The <code>.ko</code> module — must match the running kernel.</div></div>
+        <div class="box"><div class="name">NVIDIA container toolkit</div><div class="meta">Lets containerd expose <code>/dev/nvidia*</code> into pods.</div></div>
+      </div>
+    </div>
+
+    <div class="arrow"><svg viewBox="0 0 24 24"><path d="M12 4v14"/><path d="M6 12l6 6 6-6"/></svg></div>
+
+    <div class="layer cluster">
+      <div class="pill install"><svg viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>The one piece you install on AWS</div>
+      <div class="lhead">
+        <div class="badge"><svg viewBox="0 0 24 24"><path d="M12 2l8 4.6v9.2L12 22l-8-6.2V6.6L12 2z"/><circle cx="12" cy="12" r="3"/></svg></div>
+        <div><div class="tag">Layer 2 · cluster-level</div><div class="ltitle">Kubernetes GPU enablement</div></div>
+      </div>
+      <div class="comp">
+        <div class="box"><div class="name">NVIDIA device plugin <span style="font-weight:550;color:var(--sub)">(DaemonSet)</span></div><div class="meta">Advertises <code>nvidia.com/gpu: N</code> to the kubelet. Without it, the scheduler can't "see" the GPU at all.</div></div>
+      </div>
+    </div>
+
+    <div class="arrow"><svg viewBox="0 0 24 24"><path d="M12 4v14"/><path d="M6 12l6 6 6-6"/></svg></div>
+
+    <div class="result">
+      <div class="badge"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></div>
+      <div class="txt"><b>kube-scheduler</b> can now place a pod that requests <code>resources.limits: nvidia.com/gpu: 1</code>.</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

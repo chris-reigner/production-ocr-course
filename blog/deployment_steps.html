@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root{
+    --ink:#0f172a; --sub:#475569; --line:#e2e8f0; --bg:#f8fafc;
+    --c1:#6366f1; --c2:#0ea5e9; --c3:#14b8a6; --c4:#8b5cf6; --c5:#f59e0b; --c6:#ec4899;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;color:var(--ink);-webkit-font-smoothing:antialiased}
+  .wrap{width:2100px;padding:56px 56px 64px}
+  .eyebrow{font-size:15px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--sub)}
+  h1{font-size:34px;font-weight:750;margin:8px 0 6px;letter-spacing:-.02em}
+  .lede{font-size:17px;color:var(--sub);margin-bottom:40px}
+  .row{display:flex;align-items:stretch;gap:0}
+  .step{flex:1;position:relative;padding:0 13px}
+  .card{background:var(--bg);border:1px solid var(--line);border-radius:18px;padding:26px 24px 28px;height:100%;box-shadow:0 1px 0 rgba(15,23,42,.03),0 12px 28px -18px rgba(15,23,42,.25)}
+  .top{display:flex;align-items:center;gap:14px;margin-bottom:16px}
+  .badge{width:48px;height:48px;border-radius:13px;display:flex;align-items:center;justify-content:center;color:#fff;flex:none;box-shadow:0 8px 18px -8px currentColor}
+  .badge svg{width:25px;height:25px;stroke:#fff;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+  .num{font-size:13px;font-weight:700;color:var(--sub);letter-spacing:.11em}
+  .title{font-size:19px;font-weight:700;margin-top:2px;line-height:1.18}
+  .desc{font-size:14.5px;line-height:1.55;color:var(--sub);margin-bottom:16px}
+  .chips{display:flex;flex-wrap:wrap;gap:8px}
+  .chip{font-size:13px;font-weight:550;color:var(--sub);background:#fff;border:1px solid var(--line);border-radius:999px;padding:5px 11px}
+  .conn{position:absolute;top:46px;right:-12px;width:24px;height:24px;z-index:5;color:#cbd5e1}
+  .conn svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+  .s1 .badge{background:var(--c1);color:var(--c1)}
+  .s2 .badge{background:var(--c2);color:var(--c2)}
+  .s3 .badge{background:var(--c3);color:var(--c3)}
+  .s4 .badge{background:var(--c4);color:var(--c4)}
+  .s5 .badge{background:var(--c5);color:var(--c5)}
+  .s6 .badge{background:var(--c6);color:var(--c6)}
+  .footline{display:flex;align-items:center;gap:10px;margin-top:34px;color:var(--sub);font-size:15px;font-weight:550}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--c1)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Production OCR on AWS EKS</div>
+  <h1>The deployment, end to end</h1>
+  <div class="lede">Six steps, in order — each one has to land before the next has anything to stand on.</div>
+
+  <div class="row">
+    <div class="step s1">
+      <div class="card">
+        <div class="top">
+          <div class="badge"><svg viewBox="0 0 24 24"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4"/><path d="M3 17l9 4 9-4"/></svg></div>
+          <div><div class="num">STEP 1</div><div class="title">Terraform foundation</div></div>
+        </div>
+        <div class="desc">The base AWS layer, entirely as code: a VPC with public and private subnets, an EFS volume for shared model weights, the IAM roles, and the OIDC provider that later lets pods borrow AWS permissions.</div>
+        <div class="chips"><span class="chip">VPC & subnets</span><span class="chip">EFS (RWX)</span><span class="chip">IAM roles</span><span class="chip">OIDC provider</span></div>
+      </div>
+      <div class="conn"><svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg></div>
+    </div>
+
+    <div class="step s2">
+      <div class="card">
+        <div class="top">
+          <div class="badge"><svg viewBox="0 0 24 24"><path d="M12 2l8 4.6v9.2L12 22l-8-6.2V6.6L12 2z"/><circle cx="12" cy="12" r="3"/></svg></div>
+          <div><div class="num">STEP 2</div><div class="title">Cluster configuration</div></div>
+        </div>
+        <div class="desc">Carve the EKS cluster into node groups — CPU, high-memory Redis, and two GPU pools (T4 and L40S). Taint the GPU nodes so only GPU work lands there, and install the NVIDIA device plugin.</div>
+        <div class="chips"><span class="chip">Node groups</span><span class="chip">GPU taints</span><span class="chip">Device plugin</span></div>
+      </div>
+      <div class="conn"><svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg></div>
+    </div>
+
+    <div class="step s3">
+      <div class="card">
+        <div class="top">
+          <div class="badge"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg></div>
+          <div><div class="num">STEP 3</div><div class="title">EKS deployment</div></div>
+        </div>
+        <div class="desc">Build the three images to ECR, then layer the stack in order: KEDA for scaling, the ingestion Job that fills EFS with weights, the vLLM server, and the Rust producer with the layout worker.</div>
+        <div class="chips"><span class="chip">Images → ECR</span><span class="chip">KEDA</span><span class="chip">Ingestion Job</span><span class="chip">vLLM serving</span></div>
+      </div>
+      <div class="conn"><svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg></div>
+    </div>
+
+    <div class="step s4">
+      <div class="card">
+        <div class="top">
+          <div class="badge"><svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.4-3 8.2-7 10-4-1.8-7-5.6-7-10V6l7-3z"/><path d="M9.5 12l1.8 1.8 3.5-3.6"/></svg></div>
+          <div><div class="num">STEP 4</div><div class="title">Terraform infra & authorization services</div></div>
+        </div>
+        <div class="desc">The secure edge, provisioned as code: an internal NLB, API Gateway reaching in over PrivateLink, WAF, and a Cognito/OIDC JWT authorizer so every request is authenticated and throttled before it reaches a pod.</div>
+        <div class="chips"><span class="chip">API Gateway</span><span class="chip">PrivateLink</span><span class="chip">WAF</span><span class="chip">Cognito / OIDC</span></div>
+      </div>
+      <div class="conn"><svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg></div>
+    </div>
+
+    <div class="step s5">
+      <div class="card">
+        <div class="top">
+          <div class="badge"><svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 15l3-4 3 3 4-6"/></svg></div>
+          <div><div class="num">STEP 5</div><div class="title">Monitoring setup</div></div>
+        </div>
+        <div class="desc">Wire up the metrics that matter — none scrape by default. A DCGM exporter gives GPU telemetry, and a ServiceMonitor on vLLM's queue depth feeds both Grafana and the KEDA autoscaler.</div>
+        <div class="chips"><span class="chip">Prometheus</span><span class="chip">Grafana</span><span class="chip">DCGM exporter</span><span class="chip">ServiceMonitor</span></div>
+      </div>
+      <div class="conn"><svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></svg></div>
+    </div>
+
+    <div class="step s6">
+      <div class="card">
+        <div class="top">
+          <div class="badge"><svg viewBox="0 0 24 24"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6"/><path d="M9 15l2 2 4-4"/></svg></div>
+          <div><div class="num">STEP 6</div><div class="title">Testing & validation</div></div>
+        </div>
+        <div class="desc">Follow one request end to end: tail each tier's logs, mint a Cognito token, push a real PDF through the public gateway, and confirm both the OCR round-trip and the metrics landing in Prometheus.</div>
+        <div class="chips"><span class="chip">Cognito token</span><span class="chip">PDF OCR</span><span class="chip">End-to-end round-trip</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footline"><span class="dot"></span>Terraform builds the base · Kubernetes and serving go on top · the secure edge fronts it · monitoring makes it observable · a real PDF proves the round-trip.</div>
+</div>
+</body>
+</html>

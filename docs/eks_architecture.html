@@ -134,6 +134,13 @@
   .store small { color: var(--muted); }
   .store ul { columns: 2; margin: 12px 0 0; padding-left: 16px; }
   .store li { font-size: 12.5px; margin: 3px 0; color:#33405c; }
+  .flowrow { margin-top: 14px; display:flex; flex-direction:column; gap:0; }
+  .rstep { display:flex; gap:10px; align-items:flex-start; }
+  .rstep .b { flex:0 0 auto; width:20px; height:20px; border-radius:999px; background:var(--indigo); color:#fff; font-size:11px; font-weight:700; display:grid; place-items:center; margin-top:1px; }
+  .rstep .t { font-size:12.5px; color:#33405c; line-height:1.5; }
+  .rstep .t b { color:#16223f; }
+  .rstep .t code { background:#fff; border:1px solid #e0dcf7; padding:0 5px; border-radius:5px; font-size:11.5px; color:#4b3fca; }
+  .rconn { margin:3px 0 3px 9px; color:var(--dash); font-size:14px; line-height:1; }
   .mini { border:1px solid var(--green-bd); background: var(--green-bg); border-radius:14px; padding:14px 16px; }
   .mini h4 { margin:0 0 8px; font-size:13px; letter-spacing:.08em; text-transform:uppercase; color: var(--green-tx); }
   .mini div { font-size:13px; margin:6px 0; color:#2c4a37; }
@@ -165,7 +172,7 @@
 
   <!-- PLATFORM SERVICES -->
   <div class="panel platform">
-    <div class="panel-title">Amazon Elastic Kubernetes Service (EKS) · v1.31 control plane</div>
+    <div class="panel-title">Amazon Elastic Kubernetes Service (EKS) · Managed Control Plane</div>
     <div class="cards5">
       <div class="svc"><div class="ic" style="background:#e8f7f0">⚙️</div><div><h4>KEDA</h4><p>Event autoscaling · scale-to-zero</p></div></div>
       <div class="svc"><div class="ic" style="background:#fdeee6">🔥</div><div><h4>Prometheus + Grafana</h4><p>DCGM GPU telemetry · ServiceMonitors</p></div></div>
@@ -191,7 +198,7 @@
       <span class="sep">→</span>
       <div class="node"><b>Node groups</b><small>image pull on schedule</small></div>
     </div>
-    <div class="imgs">images: <code>ocr-vlm-qwen</code> &nbsp; <code>ocr-api-rust</code> &nbsp; <code>ocr-worker-rt</code> &nbsp;·&nbsp; ECR is a registry only — CodeBuild does the build (AWS analog of <code>az acr build</code>)</div>
+    <div class="imgs">images: <code>ocr-vlm-qwen</code> &nbsp; <code>ocr-api-rust</code> &nbsp; <code>ocr-worker-rt</code> &nbsp;·&nbsp; ECR is a registry only — CodeBuild does the build</div>
   </div>
 
   <!-- AUTOSCALING SIGNALS -->
@@ -205,12 +212,16 @@
 
   <!-- PIPELINE -->
   <div class="pipe">
-    <!-- 1 AI Agent -->
+    <!-- 1 Client -->
     <div class="stage-wrap"><div class="stage">
-      <div class="top"><span class="glyph">🤖</span></div>
-      <h3>AI Agent</h3>
-      <div class="role">Sends document (PDF / Image)</div>
-      <span class="tag edge">client</span>
+      <div class="top"><span class="glyph">👤🤖🔌</span></div>
+      <h3>Client</h3>
+      <div class="role">Human · AI agent · API call</div>
+      <ul>
+        <li><code style="background:none">POST /process</code> (PDF / image)</li>
+        <li><code style="background:none">GET /status/:id</code> to poll</li>
+      </ul>
+      <span class="tag edge">any caller</span>
     </div><div class="arrow"><span class="n">1</span><span class="glyph fwd">→</span></div></div>
 
     <!-- 2 API Gateway -->
@@ -233,8 +244,9 @@
       <h3>Rust API</h3>
       <div class="role">Task Orchestrator &amp; Queue Producer</div>
       <ul>
-        <li>Rasterize → <code style="background:none">/dev/shm</code></li>
-        <li>Enqueue tasks in Redis</li>
+        <li>HSET file+meta → <code style="background:none">task:{id}</code></li>
+        <li>LPUSH id → <code style="background:none">ocr_tasks</code></li>
+        <li>HGETALL for <code style="background:none">GET /status</code></li>
         <li>Internal NLB backend</li>
       </ul>
       <span class="tag cpu">apinp · m6i.large</span>
@@ -255,7 +267,6 @@
       <span class="n">4</span>
       <span class="glyph fwd">→</span>
       <span class="glyph back">←</span>
-      <span class="lbl">image / chart req ⇅ enriched OCR</span>
     </div></div>
 
     <!-- 5 vLLM -->
@@ -285,14 +296,15 @@
     <div class="store">
       <div class="head">
         <div class="redis">🧱</div>
-        <div><h3>Redis — State Store</h3><small>redisnp · r6i.xlarge &nbsp;·&nbsp; async state (stages 2–4)</small></div>
+        <div><h3>Redis — State Store &amp; Queue</h3><small>redisnp · r6i.xlarge &nbsp;·&nbsp; the only link between the Rust API and the Worker</small></div>
       </div>
-      <ul>
-        <li>Task queue (<code style="background:none">ocr_tasks</code>)</li>
-        <li>File storage (base64)</li>
-        <li>OCR results</li>
-        <li>Status &amp; metadata</li>
-      </ul>
+      <div class="flowrow">
+        <div class="rstep"><span class="b">1</span><span class="t"><b>Rust API writes →</b> <code>HSET task:{id}</code> status·filename·base64 file, then <code>LPUSH ocr_tasks</code> to enqueue the id</span></div>
+        <div class="rconn">↓</div>
+        <div class="rstep"><span class="b">2</span><span class="t"><b>Worker consumes →</b> <code>BRPOP ocr_tasks</code> pops the id, reads the hash, then <code>HSET</code> writes <code>status=done</code> · <code>result</code> back</span></div>
+        <div class="rconn">↓</div>
+        <div class="rstep"><span class="b">3</span><span class="t"><b>Rust API reads ←</b> <code>HGETALL task:{id}</code> on <code>GET /status/:id</code> to return status &amp; result</span></div>
+      </div>
     </div>
     <div class="mini">
       <h4>GPU Optimizations</h4>
@@ -324,10 +336,12 @@
   </div>
 
   <div class="note">
-    EKS-specific vs. AKS: <b>API Management → API Gateway + WAF + VPC Link</b> &nbsp;·&nbsp;
-    <b>ACR build → CodeBuild + ECR</b> &nbsp;·&nbsp; <b>Blob → EFS (RWX)</b> &nbsp;·&nbsp;
-    <b>GPU Operator → NVIDIA device plugin</b> &nbsp;·&nbsp; <b>managed identity → IAM OIDC / IRSA</b> &nbsp;·&nbsp;
-    <b>Ingress → AWS LB Controller + internal NLB</b> &nbsp;·&nbsp; <b>A100 80GB → L40S 48GB</b>. See <code>docs/cloud_comparison.md</code>.
+    <b>vLLM tuning for the L40S (48&nbsp;GB):</b> &nbsp;
+    <code>GPU_MEMORY 0.85</code> reserves 85% of VRAM for model weights + KV cache (the rest is headroom for CUDA graphs &amp; fragmentation) &nbsp;·&nbsp;
+    <code>MAX_MODEL_LEN 16384</code> caps the context window &nbsp;·&nbsp;
+    <code>MAX_NUM_SEQS 256</code> is the max sequences batched concurrently &nbsp;·&nbsp;
+    <code>batched tokens 16K</code> bounds the tokens processed per step &nbsp;·&nbsp;
+    <code>MTP +50%</code> — Multi-Token Prediction (speculative decoding) drafts several tokens per forward pass for roughly 50% higher throughput.
   </div>
 
 </div>
