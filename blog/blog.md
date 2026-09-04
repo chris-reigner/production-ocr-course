@@ -1,4 +1,8 @@
-The production OCR course (https://theneuralmaze.substack.com/t/production-ocr-course) builds its system on Azure. I moved it to AWS expecting a rewrite. What I got instead was a lesson in exactly which part of a production AI stack cares what cloud it runs on — and it's a smaller part than you'd think.
+Welcome reader,
+
+The great production OCR course (https://theneuralmaze.substack.com/t/production-ocr-course) builds its system on Azure. I moved it to AWS expecting a rewrite. What I got instead was a lesson in exactly which part of a production AI stack cares what cloud it runs on 
+
+TLDR: It's a smaller part than you'd think.
 
 This post is the map of that move: what changed, what didn't, and the handful of AWS-specific traps that cost me the most time.
 
@@ -147,8 +151,7 @@ In front of that, API Gateway reaches into the VPC through a VPC Link (PrivateLi
 
 A fresh cluster tells you almost nothing by default. Prometheus and Grafana are installed, but out of the box they scrape none of the metrics that matter here — GPU utilization and vLLM's queue depth both come back empty even while pods run and traffic flows. You wire them up explicitly: a DCGM exporter on the GPU nodes for telemetry, and a ServiceMonitor pointing at vLLM's metrics endpoint. That second one is doing double duty — the same queue-depth metric that fills a Grafana panel is what KEDA reads to decide when to scale inference.
 
-<!-- TODO: add GPU monitoring screenshots here -->
-![GPU monitoring dashboard — GPU utilization and vLLM queue depth in Grafana (screenshots to add)](gpu_monitoring_placeholder.png)
+![GPU monitoring dashboard — GPU utilization and vLLM queue depth in Grafana (screenshots to add)](gpu_monitoring.png)
 
 Testing then means following the request end to end: tail the logs of each tier, confirm the metrics are actually landing in Prometheus, mint a Cognito token and push a document through the public gateway. Once that round-trip works, the last job is cost control. The GPU pools scale to zero when idle and a KEDA cron trigger warms one replica during business hours, so the first request of the day doesn't pay a cold start while the rest of the time you're not paying for silent GPUs at all.
 
