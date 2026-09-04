@@ -6,7 +6,7 @@ TLDR: It's a smaller part than you'd think.
 
 This post is the map of that move: what changed, what didn't, and the handful of AWS-specific traps that cost me the most time.
 
-The code lives here: <add-repo-link>
+The code lives here: https://github.com/neural-maze/production-ocr-course
 
 # The design constraints for production readiness
 
@@ -41,7 +41,7 @@ Those dependencies matter in an enterprise setting: IaC lets you tear the stack 
 
 # AWS and Azure comparison
 
-Putting the two clouds side by side is the quickest way to see the point of this whole exercise. Over the past few years the providers have converged on lookalike services — but the interesting part is how little of *this* stack touches them. We don't lean on managed AI services; we build our own from cloud-native primitives: Kubernetes, storage, IaC, API services, networking, OIDC. So the surface that actually changes between clouds is short:
+Putting the two clouds side by side is the quickest way to see the point of this whole exercise. Over the past few years the providers have converged on lookalike services in my opinion but the interesting part is how little of *this* stack touches them. We don't lean on managed AI services; we build our own from cloud-native primitives: Kubernetes, storage, IaC, API services, networking, OIDC. So the surface that actually changes between clouds is short:
 
 | Concern | Azure (course) | AWS (this build) |
 |---|---|---|
@@ -51,8 +51,6 @@ Putting the two clouds side by side is the quickest way to see the point of this
 | **Shared storage (RWX)** | Azure Files | EFS |
 | **Identity** | managed / workload identity | OIDC provider + IRSA |
 | **Core (unchanged)** | Rust producer · Redis · layout worker · vLLM · KEDA | *identical* |
-
-Everything above the last row is a swap at the edges. The last row is the payoff: the application stack doesn't move.
 
 Both cloud deployments share an identical core application stack and metric-driven scaling philosophy:
 
@@ -101,11 +99,11 @@ For reference: https://instances.vantage.sh/aws/ec2/g4dn.4xlarge?currency=USD
 
 ## Manual taint of GPU nodes
 
-Quick refresher, because the mental model here trips people up. A taint is a "keep out" sign on a node: by default the scheduler places any pod on any node, but a taint flips that — "no pod lands here unless it explicitly says it's allowed." A toleration is the matching permission slip on a pod: "I'm allowed onto nodes with this taint."
+As a quick refresher, a taint is a "keep out" sign on a node: by default the scheduler places any pod on any node, but a taint flips that. "No pod lands here unless it explicitly says it's allowed." A toleration is the matching permission slip on a pod: "I'm allowed onto nodes with this taint."
 
 Here's the trap: a toleration does *not* pull a pod onto the GPU node. It isn't a magnet — it only says "if you happen to place me here, I won't object." So a toleration without a taint on the node buys you nothing.
 
-And that's exactly where EKS bites: unlike AKS, it does **not** taint GPU nodes automatically. Skip the manual taint and there's nothing keeping ordinary pods off your L40S — an unconstrained NGINX, a Prometheus scraper, any CPU workload can schedule onto a GPU node you're paying premium for. So on EKS you taint the GPU node groups explicitly, and give the GPU pods the matching toleration.
+Unlike AKS, it does **not** taint GPU nodes automatically. So on EKS you taint the GPU node groups explicitly, and give the GPU pods the matching toleration.
 
 ## And...
 
@@ -113,15 +111,15 @@ That's really it. The differences sit at the edges — APIM vs. API Gateway, the
 
 # The 6 steps towards OCR production
 
-Here's the road ahead. Six steps, in order — each one has to land before the next has anything to stand on.
+Here's the road ahead.
 
 ![The six deployment steps: Terraform foundation (network, storage, IAM, OIDC), cluster configuration, EKS deployment, Terraform infra and authorization services, monitoring setup, and testing and validation with a PDF](deployment_steps.png)
 
 ## Infrastructure Setup: EKS & Storage
 
-The first surprise coming from Azure or GCP is that EKS gives you nothing for free. `az aks create` quietly provisions your networking and identity for you; EKS makes you bring your own. So before there is a cluster, you create the IAM roles (one for the control plane, one for the nodes), a VPC with public and private subnets, and an OIDC provider that later lets pods borrow AWS permissions. It feels verbose the first time, but this explicitness is exactly what makes the whole thing reproducible.
+`az aks create` provisions your networking and identity for you; EKS makes you bring your own. So before there is a cluster, you create the IAM roles (one for the control plane, one for the nodes), a VPC with public and private subnets, and an OIDC provider that later lets pods borrow AWS permissions. It feels verbose the first time, but this explicitness is exactly what makes the whole thing reproducible.
 
-Once the control plane is up, you carve it into node groups. One small untainted pool hosts the cluster plumbing — the add-ons, controllers and operators that have nowhere else to land. The other four mirror the workloads: two GPU pools (L40S for inference, T4 for layout), a high-memory pool for Redis, and a CPU pool for the ingest API. The GPU pools get a taint so only GPU work schedules there, and because the AWS GPU AMI already ships the NVIDIA drivers, all you add on top is the device plugin that tells Kubernetes the GPUs exist.
+Once the control plane is up, you carve it into node groups. One small untainted pool hosts the cluster plumbing: the add-ons, controllers and operators that have nowhere else to land. The other four mirror the workloads: two GPU pools (L40S for inference, T4 for layout), a high-memory pool for Redis, and a CPU pool for the ingest API. The GPU pools get a taint so only GPU work schedules there, and because the AWS GPU AMI already ships the NVIDIA drivers, all you add on top is the device plugin that tells Kubernetes the GPUs exist.
 
 Storage is the other half of the foundation. The models are heavy binary blobs, and both the ingestion job and the inference pods need to read them at the same time — so we mount an EFS volume in `ReadWriteMany` mode (EBS can't do shared read-write). In practice you let Terraform build all of this — VPC, roles, cluster, node groups, EFS — in one apply, then only reach for the manual CLI path if you want to see every dependency laid out step by step.
 
@@ -137,22 +135,23 @@ Serving is where vLLM earns its place: it loads the model once and keeps the GPU
 
 ## Deploy container images and the full EKS stack
 
-Three images drive the pipeline — the Rust ingest API, the Python layout worker, and the vLLM server — and they all have to reach ECR built for `linux/amd64`, the architecture of the EKS nodes. Unlike Azure's ACR, ECR only stores images; it doesn't build them. So we build in the cloud on CodeBuild (native amd64 agents that push straight to ECR), which sidesteps the slow QEMU cross-compilation you'd hit building the CUDA-heavy images on an Apple-Silicon laptop. Building locally with buildx is fine too, as long as you force the platform flag.
+Three images drive the pipeline: the Rust ingest API, the Python layout worker, and the vLLM server — and they all have to reach ECR built for `linux/amd64`, the architecture of the EKS nodes. Unlike Azure's ACR, ECR only stores images; it doesn't build them. So we build in the cloud on CodeBuild (native amd64 agents that push straight to ECR), which sidesteps the slow QEMU cross-compilation you'd hit building the CUDA-heavy images on an Apple-Silicon laptop. Building locally with buildx is fine too, as long as you force the platform flag.
 
 With the images in place, the stack goes on in layers. First KEDA, which will later scale everything from real signals. Then the Prometheus and Grafana stack, so metrics exist before anything depends on them. Finally a single deploy script applies the application manifests, injecting your account's ECR registry on the fly so no account ID is ever committed to the repo. At the end of this step every service is running — it just isn't reachable from the outside yet.
 
 ## Deploy the front API along with enterprise OIDC
 
-This is the door in the curtain. We never expose a raw Kubernetes LoadBalancer to the internet — that invites DDoS, credential stuffing, and, worse for this stack, runaway KEDA scale-out on expensive GPU nodes. Instead the API sits behind an *internal* Network Load Balancer with only a private IP, provisioned by the AWS Load Balancer Controller straight from the service annotations. Nothing about the backend touches the public internet.
+This is the door in the curtain. We never expose a raw Kubernetes LoadBalancer to the internet: that invites DDoS, credential stuffing, and, worse for this stack, runaway KEDA scale-out on expensive GPU nodes. Instead the API sits behind an *internal* Network Load Balancer with only a private IP, provisioned by the AWS Load Balancer Controller straight from the service annotations. Nothing about the backend touches the public internet.
 
-In front of that, API Gateway reaches into the VPC through a VPC Link (PrivateLink), so the gateway is the only internet-facing component and every request is authenticated and throttled before it gets anywhere near a pod. Identity is a JWT authorizer backed by Cognito (or any OIDC issuer) — each call carries a bearer token, and missing or expired tokens are rejected at the edge. Stage-level throttling is the quiet hero here: it caps request bursts so a flood can't trigger a costly GPU spin-up. One AWS wrinkle to note — WAF won't attach to an HTTP API, so if you need a Web ACL you front it with CloudFront or an ALB instead.
+In front of that, API Gateway reaches into the VPC through a VPC Link (PrivateLink), so the gateway is the only internet-facing component and every request is authenticated and throttled before it gets anywhere near a pod. Identity is a JWT authorizer backed by Cognito (or any OIDC issuer) ; each call carries a bearer token, and missing or expired tokens are rejected at the edge. Stage-level throttling is the quiet hero here: it caps request bursts so a flood can't trigger a costly GPU spin-up.
 
 ## Monitoring and testing
 
-A fresh cluster tells you almost nothing by default. Prometheus and Grafana are installed, but out of the box they scrape none of the metrics that matter here — GPU utilization and vLLM's queue depth both come back empty even while pods run and traffic flows. You wire them up explicitly: a DCGM exporter on the GPU nodes for telemetry, and a ServiceMonitor pointing at vLLM's metrics endpoint. That second one is doing double duty — the same queue-depth metric that fills a Grafana panel is what KEDA reads to decide when to scale inference.
+A fresh cluster tells you almost nothing by default. Prometheus and Grafana are installed, but out of the box they scrape none of the metrics that matter here. GPU utilization and vLLM's queue depth both come back empty even while pods run and traffic flows. You wire them up explicitly: a DCGM exporter on the GPU nodes for telemetry, and a ServiceMonitor pointing at vLLM's metrics endpoint. That second one is doing double duty: the same queue-depth metric that fills a Grafana panel is what KEDA reads to decide when to scale inference.
 
 ![GPU monitoring dashboard — GPU utilization and vLLM queue depth in Grafana (screenshots to add)](gpu_monitoring.png)
 
+Monitoring your GPU usage is a time and money saver. Over utilized it constantly and you may have latency issues or need to serve a bigger GPUs (or just increase it), under utilize it and you probably have a resource that is too big for your consumption. That costs money.
 Testing then means following the request end to end: tail the logs of each tier, confirm the metrics are actually landing in Prometheus, mint a Cognito token and push a document through the public gateway. Once that round-trip works, the last job is cost control. The GPU pools scale to zero when idle and a KEDA cron trigger warms one replica during business hours, so the first request of the day doesn't pay a cold start while the rest of the time you're not paying for silent GPUs at all.
 
 
@@ -163,31 +162,31 @@ Here's the breakdown (eu-central-1 On-Demand list price). Non-GPU resources run 
 
 The headline before you read the cells: idle, this floor is ~$530/mo you *can't* scale away — the GPUs are the only thing that goes to zero, and they're most of the bill the moment they're on.
 
-| Resource — description | Rate | $/mo · scaled-to-0 | $/mo · 10h×wkdy | $/mo · 24/7 |
-|---|---|---|---|---|
-| **STORAGE** | | | | |
-| EFS — model-weights volume (9.5 GB, elastic, RWX) | $0.30/GB-mo | 2.84 | 2.84 | 2.84 |
-| EBS — root vols, non-GPU nodes (60 GB gp3) | $0.0952/GB-mo | 5.71 | 5.71 | 5.71 |
-| ECR — container image storage (est.) | $0.10/GB-mo | ~2.00 | ~2.00 | ~2.00 |
-| **Storage subtotal** | | **10.55** | **10.55** | **10.55** |
-| **CONTAINER (non-GPU compute)** | | | | |
+| Resource / description                                                     | Rate | $/mo · scaled-to-0 | $/mo · 10h×wkdy | $/mo · 24/7 |
+|----------------------------------------------------------------------------|---|---|---|---|
+| **STORAGE**                                                                | | | | |
+| EFS — model-weights volume (9.5 GB, elastic, RWX)                          | $0.30/GB-mo | 2.84 | 2.84 | 2.84 |
+| EBS — root vols, non-GPU nodes (60 GB gp3)                                 | $0.0952/GB-mo | 5.71 | 5.71 | 5.71 |
+| ECR — container image storage (est.)                                       | $0.10/GB-mo | ~2.00 | ~2.00 | ~2.00 |
+| **Storage subtotal**                                                       | | **10.55** | **10.55** | **10.55** |
+| **CONTAINER (non-GPU compute)**                                            | | | | |
 | systemnp — m6i.large, cluster add-ons (EFS CSI, KEDA, Prometheus, LB ctrl) | $0.115/hr | 83.95 | 83.95 | 83.95 |
-| apinp — m6i.large, Rust producer API (KEDA min=1) | $0.115/hr | 83.95 | 83.95 | 83.95 |
-| redisnp — r6i.xlarge, Redis state store / queue | $0.304/hr | 221.92 | 221.92 | 221.92 |
-| **Container subtotal** | | **389.82** | **389.82** | **389.82** |
-| **NETWORK** | | | | |
-| NAT gateway — single, private-subnet egress | $0.052/hr | 37.96 | 37.96 | 37.96 |
-| NLB — internal, API ingress (+LCU) | ~$0.026/hr | ~19.18 | ~19.18 | ~19.18 |
-| **Network subtotal** | | **57.14** | **57.14** | **57.14** |
-| **EKS (excl. GPU)** | | | | |
-| EKS control plane — 1 cluster | $0.10/hr | 73.00 | 73.00 | 73.00 |
-| **EKS subtotal** | | **73.00** | **73.00** | **73.00** |
-| **GPU** | | | | |
-| gpunpa100 — g6e.4xlarge, L40S 48 GB, vLLM inference (min=0) | $3.757/hr | 0 | 814.1 | 2,742.6 |
-| gpunpt4 — g4dn.4xlarge, T4 16 GB, layout worker (min=0) | $1.505/hr | 0 | 326.1 | 1,098.7 |
-| EBS — GPU node root vols (200 GB gp3, exist only while nodes up) | $0.0952/GB-mo | 0 | 5.7 | 19.0 |
-| **GPU subtotal** | | **0** | **1,145.9** | **3,860.3** |
-| **GRAND TOTAL** | | **~$530/mo** | **~$1,676/mo** | **~$4,391/mo** |
+| apinp — m6i.large, Rust producer API (KEDA min=1)                          | $0.115/hr | 83.95 | 83.95 | 83.95 |
+| redisnp — r6i.xlarge, Redis state store / queue                            | $0.304/hr | 221.92 | 221.92 | 221.92 |
+| **Container subtotal**                                                     | | **389.82** | **389.82** | **389.82** |
+| **NETWORK**                                                                | | | | |
+| NAT gateway — single, private-subnet egress                                | $0.052/hr | 37.96 | 37.96 | 37.96 |
+| NLB — internal, API ingress (+LCU)                                         | ~$0.026/hr | ~19.18 | ~19.18 | ~19.18 |
+| **Network subtotal**                                                       | | **57.14** | **57.14** | **57.14** |
+| **EKS (excl. GPU)**                                                        | | | | |
+| EKS control plane — 1 cluster                                              | $0.10/hr | 73.00 | 73.00 | 73.00 |
+| **EKS subtotal**                                                           | | **73.00** | **73.00** | **73.00** |
+| **GPU**                                                                    | | | | |
+| gpunpa100 — g6e.4xlarge, L40S 48 GB, vLLM inference (min=0)                | $3.757/hr | 0 | 814.1 | 2,742.6 |
+| gpunpt4 — g4dn.4xlarge, T4 16 GB, layout worker (min=0)                    | $1.505/hr | 0 | 326.1 | 1,098.7 |
+| EBS — GPU node root vols (200 GB gp3, exist only while nodes up)           | $0.0952/GB-mo | 0 | 5.7 | 19.0 |
+| **GPU subtotal**                                                           | | **0** | **1,145.9** | **3,860.3** |
+| **GRAND TOTAL**                                                            | | **~$530/mo** | **~$1,676/mo** | **~$4,391/mo** |
 
 There are a few obvious levers to bring these costs down:
 - commit to a Savings Plan or Reserved Instances for the always-on compute;
